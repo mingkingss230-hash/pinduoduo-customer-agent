@@ -14,6 +14,10 @@
 
 面向拼多多商家的 AI 客服 Agent 系统，支持售前、售中、售后三场景知识库，结合商品、订单、物流和会话上下文自动检索知识并生成回复；内置转人工、夜间模式、禁词过滤、工具调用控制和回复日志观测，目标是把大模型从“会聊天”变成真正能接待客户的电商客服工作流。
 
+## English Summary
+
+This is a Pinduoduo-focused AI customer-service Agent for Chinese e-commerce merchants. It combines product knowledge, presale/insale/aftersale scene knowledge, order context, logistics context, controlled tool calling, human handoff, night-mode policy, forbidden-word filtering, and reply logging. The goal is not to build a simple chatbot, but to turn an LLM into a controllable customer-service workflow.
+
 ## 功能特性
 
 - 桌面端客服工作台，基于 PyQt6
