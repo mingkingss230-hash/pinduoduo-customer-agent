@@ -1,4 +1,4 @@
-# Agent Customer AI
+# 拼多多客服 Agent
 
 一个面向电商客服场景的 AI 客服桌面应用，基于 PyQt6 和 OpenAI 兼容接口构建。
 
