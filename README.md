@@ -98,6 +98,12 @@ Agent-Customer-AI/
 - 店铺专属迁移脚本
 - 商品型号专项补库脚本
 
+## 贡献者与致谢
+
+- 原项目作者：**JC0v0**，本项目基于 `Customer-Agent` 二次开发
+- 二次开发与产品方向：**mingkingss230-hash**
+- AI 编程协作：**OpenAI Codex**
+
 ## 正在迭代的方向
 
 这个项目适合继续扩展：
