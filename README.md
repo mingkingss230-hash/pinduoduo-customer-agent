@@ -1,6 +1,7 @@
 # 拼多多客服 Agent
 
 一个面向电商客服场景的 AI 客服桌面应用，基于 PyQt6 和 OpenAI 兼容接口构建。
+我本人的7个店铺已经全量使用这个项目替代人工客服。
 
 本项目基于原作者 [@JC0v0](https://github.com/JC0v0) 的 `Customer-Agent` 二次开发：
 
