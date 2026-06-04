@@ -2,7 +2,7 @@
 
 一个面向电商客服场景的 AI 客服桌面应用，基于 PyQt6 和 OpenAI 兼容接口构建。
 
-本项目基于原作者 **JC0v0** 的 `Customer-Agent` 二次开发：
+本项目基于原作者 [@JC0v0](https://github.com/JC0v0) 的 `Customer-Agent` 二次开发：
 
 - 原项目地址：`https://github.com/JC0v0/Customer-Agent`
 - 原项目许可证：MIT License
@@ -134,7 +134,7 @@ Agent-Customer-AI/
 
 ## 贡献者与致谢
 
-- 原项目作者：**JC0v0**，本项目基于 `Customer-Agent` 二次开发
+- 原项目作者：[@JC0v0](https://github.com/JC0v0)，本项目基于 `Customer-Agent` 二次开发
 - 二次开发与产品方向：**mingkingss230-hash**
 - AI 编程协作：**OpenAI Codex**
 
@@ -170,3 +170,4 @@ MIT License。详见 [LICENSE](LICENSE)。
 我是多年电商从业者，长期在真实客服、店铺运营和售后场景里处理一线问题。虽然我不是科班程序员，也没有传统互联网产品经理的履历，但这个项目是我基于真实业务需求一步步推动出来的 AI 客服 Agent 实践：从知识库、Prompt、上下文、工具调用、订单物流判断，到转人工和日志复盘，都来自真实客服场景的持续迭代。现在我希望往 **Agent 产品经理 / AI 客服产品 / 电商 AI 解决方案** 方向发展，也欢迎对电商客服自动化、AI Agent 落地、客服知识库建设感兴趣的团队或朋友交流合作。
 
 联系方式：mingkingss230 [at] gmail.com
+
