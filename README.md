@@ -83,6 +83,12 @@ This is a Pinduoduo-focused AI customer-service Agent for Chinese e-commerce mer
 uv sync
 ```
 
+如需使用需要浏览器自动化的登录/刷新能力，可安装 Playwright 运行环境：
+
+```bash
+python scripts/install_playwright.py
+```
+
 ## 启动
 
 ```bash
@@ -90,6 +96,18 @@ python app.py
 ```
 
 首次运行会在项目根目录生成 `config.json`。
+
+## 使用说明
+
+1. 安装 Python 3.11 或以上版本。
+2. 使用 `uv sync` 安装依赖。
+3. 复制或参考 `config.example.json` 配置模型 API、业务时间、夜间模式和 prompt 规则。
+4. 启动 `python app.py`。
+5. 在桌面端添加店铺账号，并完成平台登录。
+6. 同步商品数据后，进入知识库界面维护商品知识和三场景知识。
+7. 开启自动回复前，建议先用少量会话测试场景识别、知识检索和转人工逻辑。
+
+本项目依赖平台接口和浏览器登录状态，如果平台接口、页面结构或风控策略变化，相关功能可能需要重新适配。
 
 ## 配置说明
 
@@ -104,6 +122,22 @@ python app.py
 | `prompt` | 全局客服规则和场景规则 |
 
 可以参考 `config.example.json` 创建自己的配置。
+
+## Windows 打包
+
+在 Windows 上可以使用以下命令打包桌面端：
+
+```bash
+python scripts/build_win_exe.py --clean
+```
+
+打包产物默认位于 `dist/AgentCustomer/`。
+
+打包前请确认：
+
+- 本地依赖已安装完成
+- `config.json` 不包含要提交到公开仓库的真实密钥
+- 数据库、日志、cookies、浏览器用户数据不要打进公开发布包
 
 ## 项目结构
 
