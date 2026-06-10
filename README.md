@@ -190,33 +190,6 @@ uv run python -m compileall Agent Channel Message bridge core database ui utils
 uv run pytest tests/test_turn_context.py
 ```
 
-## 发布和隐私边界
-
-公开仓库不应包含以下内容：
-
-- `config.json`
-- `logs/`
-- `runtime/`
-- `runtime_logs/`
-- `temp/`
-- `user_data/`
-- `.venv/`
-- `__pycache__/`
-- `import_ready/`
-- `plans/`
-- `*.db`
-- `*.sqlite`
-- `*.log`
-- `*.zip`
-- `*.pyc`
-- 聊天记录
-- API Key
-- cookie/token
-- 私人配置
-- 私有知识库或知识库备份
-
-当前 release 包只保留代码、示例配置、文档、构建脚本和必要静态资源。真实店铺配置、运行日志、会话数据、知识库数据和本地数据库都应只存在于部署机器。
-
 ## License
 
 MIT License。原项目版权归原作者所有，当前仓库在保留原许可证和来源说明的基础上进行二次开发。
