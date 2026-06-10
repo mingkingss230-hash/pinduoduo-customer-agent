@@ -1,207 +1,222 @@
 # 拼多多客服 Agent
 
-一个面向电商客服场景的 AI 客服桌面应用，基于 PyQt6 和 OpenAI 兼容接口构建。
-我本人的 7 个店铺已经在使用这个项目进行 AI 客服自动接待，但保留人工兜底处理复杂售后。
+面向拼多多商家的 AI 客服桌面应用，重点服务售前、售中、售后三类客服场景。项目基于 PyQt6 构建桌面工作台，通过拼多多 WebSocket 接收实时会话消息，结合商品、订单、物流、知识库和人工兜底策略生成客服回复。
 
-本项目基于原作者 [@JC0v0](https://github.com/JC0v0) 的 `Customer-Agent` 二次开发：
+当前版本主要围绕“可控客服工作流”设计：大模型不直接凭经验猜答案，而是在结构化上下文、场景判断、知识检索、工具调用和安全规则约束下回复。复杂售后、图片/视频、找不到充电口/插电口等高风险场景会直接转人工。
+
+本项目基于原作者 [@JC0v0](https://github.com/JC0v0) 的 `Customer-Agent` 二次开发。
 
 - 原项目地址：`https://github.com/JC0v0/Customer-Agent`
 - 原项目许可证：MIT License
+- 当前仓库保留原作者来源说明，并在原项目基础上增加拼多多客服业务、三场景知识库、订单上下文、商品卡/订单卡解析、受控工具调用和桌面端管理能力。
 
-本仓库保留原作者来源说明，并在原项目基础上增加了更偏生产使用的客服 Agent 能力，包括工具调用、场景知识库、场景prompt、订单/物流上下文、回复安全控制和桌面端知识管理。
+## 当前版本
 
-## About
+`v2026.06.09`
 
-面向拼多多商家的 AI 客服 Agent 系统，支持售前、售中、售后三场景知识库，结合商品、订单、物流和会话上下文自动检索知识并生成回复；内置转人工、夜间模式、禁词过滤、工具调用控制和回复日志观测，目标是把大模型从“会聊天”变成真正能接待客户的电商客服工作流。
+主要变化见 [CHANGELOG.md](CHANGELOG.md)。本版本重点引入 `TurnContext` 结构化上下文，并修复商品卡、订单卡元数据污染客户问题的问题。
 
-## English Summary
+## 业务能力
 
-This is a Pinduoduo-focused AI customer-service Agent for Chinese e-commerce merchants. It combines product knowledge, presale/insale/aftersale scene knowledge, order context, logistics context, controlled tool calling, human handoff, night-mode policy, forbidden-word filtering, and reply logging. The goal is not to build a simple chatbot, but to turn an LLM into a controllable customer-service workflow.
+- 拼多多 WebSocket 实时消息接入和自动重连。
+- 多店铺账号接入，按账号启动独立自动回复线程。
+- 售前、售中、售后三场景识别与规则加载。
+- 商品卡、订单卡、客户文本、图片、视频分离解析。
+- 商品知识、场景知识和订单上下文联合检索。
+- 自动发送文本回复、商品卡片，必要时转人工。
+- 商品未锁定时避免猜商品，优先询问或返回候选商品。
+- 支持订单状态、物流状态、签收状态等上下文约束。
+- 售后图片/视频直接转人工，避免看图臆断。
+- 售后找不到充电口/插电口直接转人工。
+- 多订单待确认默认按售后处理，降低误判售前风险。
+- 支持价格分转元，例如 `1161` 解析为 `11.61`。
+- 夜间模式、禁词过滤、回复清洗和兜底回复。
 
-## 功能特性
+## 核心流程
 
-- 桌面端客服工作台，基于 PyQt6
-- 支持 OpenAI 兼容格式的大模型接口
-- 自研 Agent 循环，支持受控工具调用
-- 商品知识库和场景知识库
-- 售前、售中、售后三场景检索
-- 首轮回复前自动预检索相关知识
-- 可结合订单状态和物流状态生成上下文
-- 支持转人工工具
-- 支持夜间模式话术（夜间人工客服不在线防止误转卡住）
-- 支持禁词替换和回复安全过滤
-- 支持 token、调用次数和回复日志记录
+```text
+拼多多 WebSocket
+    -> PDDChannel
+    -> Message Queue
+    -> Handler Chain
+       -> MessagePreprocessor
+       -> KeywordHandler
+       -> AIReplyHandler
+    -> CustomerAgent
+       -> TurnContext 解析
+       -> 场景判定
+       -> 订单上下文刷新
+       -> 预检索知识注入
+       -> LLM 工具调用循环
+       -> 回复清洗 / 转人工
+    -> SendMessage / transfer_conversation
+```
+
+关键原则：
+
+- 客户真实文本和商品/订单元数据分开处理。
+- 商品卡和订单卡只作为上下文，不直接污染客户问题。
+- 场景规则优先于通用提示词。
+- 知识库或工具没有明确答案时，不编造，转人工或追问。
+- 图片/视频不是商品功能依据，高风险问题交给人工。
+
+## 架构分层
+
+```text
+Agent/                  自研 CustomerAgent 和工具注册
+  CustomerAgent/custom/ LLM 客户端、消息构建、工具执行、会话管理、TurnContext
+  CustomerAgent/tools/  search_knowledge、send_product_card、transfer_conversation
+
+Channel/                渠道接入
+  pinduoduo/            拼多多 WebSocket、登录、消息解析和 API 封装
+
+Message/                消息队列和处理器链
+  core/                 queue、consumer、handler 管理
+  handlers/             预处理、关键词、AI 回复处理
+
+bridge/                 Context / Reply 抽象
+core/                   DI 容器、服务注册、连接状态、缓存
+database/               SQLAlchemy 模型、知识库服务、商品同步、向量检索
+ui/                     PyQt6 桌面界面
+utils/                  日志、路径、运行时资源、夜间模式等工具
+scripts/                Windows 构建脚本
+app.py                  应用入口
+```
 
 ## Agent 工具
 
-| 工具 | 说明 |
+| 工具 | 作用 |
 | --- | --- |
-| `search_knowledge` | 查询当前商品的商品知识和场景知识 |
-| `send_product_card` | 发送当前商品卡片；未锁定商品时返回候选商品 |
-| `transfer_conversation` | 将会话转接给人工客服 |
+| `search_knowledge` | 按店铺、商品、场景检索商品知识和客服知识。 |
+| `send_product_card` | 发送当前商品卡；没有锁定商品时返回候选商品。 |
+| `transfer_conversation` | 将会话转接给人工客服。 |
 
-## 提示词工程
+工具调用由 `ToolExecutor` 统一执行，CustomerAgent 会把工具结果回填给模型继续推理，直到不再需要工具或达到循环上限。
 
-这个项目不是简单把“你是客服”写进 prompt，而是围绕真实电商客服场景做了多层提示词设计：
+## TurnContext
 
-- 拆分售前、售中、售后三类场景规则，避免购买咨询、发货咨询和售后处理混在一起。
-- 全局规则约束客服语气：简短、自然、像真人客服，不输出内部系统信息。
-- 明确要求优先使用知识库和工具结果，禁止模型自行编造商品参数、价格、赠品、售后政策和物流承诺。
-- 将夜间模式、转人工边界、禁词替换、重复问题处理等客服规则写入提示词体系。
-- 精简重复规则，减少每轮 prompt 体积，降低 token 成本。
-- 针对客服场景限制回复长度，避免模型输出长篇解释。
-- 对模型输出做最终过滤，避免出现平台敏感词、内部标签、工具痕迹或不适合客户看到的内容。
+`TurnContext` 是当前版本的上下文解析底座，负责把一轮原始消息拆成稳定结构：
 
-## 上下文工程
+- `customer_text`：客户真实文本。
+- `product_card`：商品 ID、商品名、规格、价格等。
+- `order_card`：订单号、订单状态、物流状态、支付状态、快递单号等。
+- `media`：图片、视频标记和图片链接。
+- `turn_type`：当前 turn 是否包含文本、商品卡、订单卡、媒体。
+- `parse_warnings`：解析异常提示。
 
-- 首轮回复前自动预检索 1-3 条相关知识，注入到本轮 system prompt，让模型第一轮就能带知识回答。
-- 预检索只使用客户真实问题，过滤商品标题、价格、订单卡片等噪声，避免检索被无关文本污染。
-- 历史消息只保留客户说过的话和 AI 最终回复，不把工具调用过程塞回上下文。
-- 结合当前商品、店铺、订单状态、最新物流状态判断客服场景。
-- 商品锁定后优先按商品专属知识回答；商品未锁定时不让模型猜商品。
-- 控制单条知识和总注入长度，避免把大知识库直接塞进 prompt。
-- 根据售前、售中、售后场景动态选择对应知识库，而不是所有知识混在一起。可以避免售前售中的知识和售后实际应对方式不同。
+它不做 embedding、不做意图路由、不改知识库，只负责把输入清理成可控结构。
 
-## Harness 工程
+## 配置
 
-- 输入 harness：清洗客户消息，识别文本、图片、商品卡片、订单卡片和上下文类型。
-- 场景 harness：结合客户问题、订单状态和物流状态判断售前、售中、售后。
-- 检索 harness：按场景和商品检索知识，商品专属知识优先于泛化知识。
-- 工具 harness：控制模型可用工具，合并重复工具，减少无意义工具调用。
-- 输出 harness：执行禁词替换、回复长度控制、夜间模式话术和转人工话术。
+仓库只提供 `config.example.json`，本地运行时需要复制为 `config.json`：
 
-简单来说，本项目的思路不是只靠 prompt 让模型变聪明，而是通过知识库、上下文、工具和规则把模型放进一个可控的客服工作流里。
+```powershell
+Copy-Item config.example.json config.json
+```
 
-## 运行环境
+常用配置项：
 
-- Python >= 3.11
-- 推荐 Windows 环境运行桌面端
+| 配置 | 说明 |
+| --- | --- |
+| `llm.model_name` | 主模型名称。 |
+| `llm.api_key` | OpenAI 兼容接口密钥，本地填写，不提交。 |
+| `llm.api_base` | OpenAI 兼容接口地址。 |
+| `llm.max_tokens` | 普通回复最大输出长度。 |
+| `llm.tool_call_max_tokens` | 工具调用场景最大输出长度。 |
+| `llm.fallback` | 兜底模型配置。 |
+| `agent.token_window` | 会话上下文窗口。 |
+| `agent.compress_ratio` | 触发上下文压缩的比例。 |
+| `agent.max_loops` | 工具调用最大循环次数。 |
+| `business_hours` | 人工客服工作时间。 |
+| `night_mode` | 夜间模式时间。 |
+| `db_path` | 本地 SQLite 数据库路径。 |
 
-## 安装依赖
+`config.json`、数据库、日志、runtime 数据和浏览器用户数据都属于本地运行数据，不应提交到仓库。
 
-```bash
+## 本地运行
+
+环境要求：
+
+- Windows
+- Python 3.11+
+- uv
+
+安装依赖：
+
+```powershell
 uv sync
 ```
 
-如需使用需要浏览器自动化的登录/刷新能力，可安装 Playwright 运行环境：
+安装 Playwright 浏览器：
 
-```bash
-python scripts/install_playwright.py
+```powershell
+uv run playwright install chromium
 ```
 
-## 启动
+启动桌面应用：
 
-```bash
-python app.py
+```powershell
+uv run python app.py
 ```
 
-首次运行会在项目根目录生成 `config.json`。
+也可以使用项目提供的启动脚本：
 
-## 使用说明
-
-1. 安装 Python 3.11 或以上版本。
-2. 使用 `uv sync` 安装依赖。
-3. 复制或参考 `config.example.json` 配置模型 API、业务时间、夜间模式和 prompt 规则（也可以在ui界面里配置）。
-4. 启动 `python app.py`。
-5. 在桌面端添加店铺账号，并完成平台登录（建议使用子账号的账号密码登录，首次登录需要及时输入短信验证码）。
-6. 同步商品数据后，进入知识库界面维护商品知识和三场景知识。
-7. 开启自动回复前，建议先用少量会话测试场景识别、知识检索和转人工逻辑。
-
-本项目依赖平台接口和浏览器登录状态，如果平台接口、页面结构或风控策略变化，相关功能可能需要重新适配。
-
-## 配置说明
-
-主要配置项：
-
-| 配置项 | 说明 |
-| --- | --- |
-| `llm` | 大模型名称、API 地址、API Key |
-| `embedder` | 向量模型配置 |
-| `knowledge_base` | 本地知识库配置 |
-| `business_hours` | 人工客服工作时间 |
-| `prompt` | 全局客服规则和场景规则 |
-
-可以参考 `config.example.json` 创建自己的配置。
-
-## Windows 打包
-
-在 Windows 上可以使用以下命令打包桌面端：
-
-```bash
-python scripts/build_win_exe.py --clean
+```powershell
+.\start_local.ps1
 ```
 
-打包产物默认位于 `dist/AgentCustomer/`。
+## 构建 Windows 可执行文件
 
-打包前请确认：
+构建脚本位于 `scripts/`。常用命令：
 
-- 本地依赖已安装完成
-- `config.json` 不包含要提交到公开仓库的真实密钥
-- 数据库、日志、cookies、浏览器用户数据不要打进公开发布包
-
-## 项目结构
-
-```text
-Agent-Customer-AI/
-├── Agent/                  # Agent 循环、LLM 客户端、会话管理和工具
-├── Channel/                # 渠道接入
-├── Message/                # 消息队列和处理器链
-├── bridge/                 # Context / Reply 抽象
-├── core/                   # 通用服务和依赖注入
-├── database/               # SQLAlchemy 模型和知识库服务
-├── ui/                     # PyQt6 桌面界面
-├── utils/                  # 运行时工具
-├── scripts/                # 构建和通用维护脚本
-└── app.py                  # 应用入口
+```powershell
+uv run python scripts/build_win_exe.py --clean
 ```
 
-## 发布版说明
+更多构建说明见 [scripts/README.md](scripts/README.md)。
 
-本公开版本已移除私有运行数据和店铺业务数据，包括：
+## 测试
+
+当前重点测试 `TurnContext` 解析：
+
+```powershell
+uv run pytest tests/test_turn_context.py
+```
+
+发布前建议至少检查：
+
+```powershell
+uv run python -m compileall Agent Channel Message bridge core database ui utils
+uv run pytest tests/test_turn_context.py
+```
+
+## 发布和隐私边界
+
+公开仓库不应包含以下内容：
 
 - `config.json`
-- 本地 SQLite 数据库
-- 日志文件
-- cookies 和浏览器数据
-- 客户聊天记录
-- 订单号和物流单号
-- 私有知识库导出
-- 店铺专属迁移脚本
-- 商品型号专项补库脚本
+- `logs/`
+- `runtime/`
+- `runtime_logs/`
+- `temp/`
+- `user_data/`
+- `.venv/`
+- `__pycache__/`
+- `import_ready/`
+- `plans/`
+- `*.db`
+- `*.sqlite`
+- `*.log`
+- `*.zip`
+- `*.pyc`
+- 聊天记录
+- API Key
+- cookie/token
+- 私人配置
+- 私有知识库或知识库备份
 
-## 贡献者与致谢
+当前 release 包只保留代码、示例配置、文档、构建脚本和必要静态资源。真实店铺配置、运行日志、会话数据、知识库数据和本地数据库都应只存在于部署机器。
 
-- 原项目作者：[@JC0v0](https://github.com/JC0v0)，本项目基于 `Customer-Agent` 二次开发
-- 二次开发与产品方向：**mingkingss230-hash**
-- AI 编程协作：**OpenAI Codex**
+## License
 
-## 正在迭代的方向
-
-- 多平台客服接入（还需要继续抓包）
-- 场景知识库可视化编辑
-- 多模型切换和成本统计
-- 售后简单问题的协商辅助，但保留人工审核和兜底
-
-## 模型使用建议
-
-以下是基于当前电商客服场景的实际使用体感，不代表通用模型评测结论：
-
-- 不推荐：`Qwen3.5 9B` Q5量化版本本地模型。在我的测试中工具调用能力较弱，经常只输出转人工话术，但没有稳定触发真实工具调用。
-- 不推荐：`Qwen3.6 Plus`。效果可以，但成本偏高，不适合高频客服调用场景，短时间测试成本较高，约半小时消耗 50 元左右 token 成本。
-- 推荐方向：优先选择参数规模更大、工具调用能力更好的 Qwen 系列模型。Qwen 对中文电商客服、商品参数、售前售后问答的适配能力相对更强，建议使用Qwen3以上的中大参数模型。
-- 当前使用：`小米 Mimo v2.5` 非思考模式，当前项目主要使用的线上模型。
-- 体验中规中矩：`Doubao Seed 2.0 Lite`，可以用，但整体没有特别突出。
-- 可选：`GLM 5.1` 和 `Kimi 2.6` 在关闭思考模式后也可以用于客服场景。
-- 未测试：`DeepSeek` 暂未在当前项目里实际验证。
-- 6.5～6.6测试：`qwen3.6 35ba3b` 回复效果较好，工具调用能力略有瑕疵，没有按照固定的参数输出，偶尔会出现失败问题。偶尔会出现输出内部知识库内容，需要优化知识库条目。
-  
-## 许可证
-
-MIT License。详见 [LICENSE](LICENSE)。
-
-## 求职与合作
-
-我是多年电商从业者，base深圳，长期在真实客服、店铺运营和售后场景里处理一线问题。虽然我不是科班程序员，也没有传统互联网产品经理的履历，但这个项目是我基于真实业务需求一步步推动出来的 AI 客服 Agent 实践：从知识库、Prompt、上下文、工具调用、订单物流判断，到转人工和日志复盘，都来自真实客服场景的持续迭代。现在我希望往 **Agent 产品经理 / AI 客服产品 / 电商 AI 解决方案** 方向发展，也欢迎对电商客服自动化、AI Agent 落地、客服知识库建设感兴趣的团队或朋友交流合作。
-
-联系方式：mingkingss230 [at] gmail.com
-
+MIT License。原项目版权归原作者所有，当前仓库在保留原许可证和来源说明的基础上进行二次开发。
