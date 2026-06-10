@@ -25,9 +25,15 @@ logger = get_logger("TransferConversationTool")
 class TransferConversationParams(BaseModel):
     """会话转接参数"""
 
-    shop_id: Optional[Union[str, int]] = Field(default=None, description="店铺ID")
-    user_id: Optional[Union[str, int]] = Field(default=None, description="用户ID（账号ID）")
-    recipient_uid: Optional[str] = Field(default=None, description="接收转接的用户UID")
+    shop_id: Optional[Union[str, int]] = Field(default=None, description="店铺ID；如果需要传入，纯数字也按字符串传入")
+    user_id: Optional[Union[str, int]] = Field(default=None, description="用户ID（账号ID）；如果需要传入，纯数字也按字符串传入")
+    recipient_uid: Optional[str] = Field(
+        default=None,
+        description=(
+            "接收转接的客户UID，必须是字符串。即使内容全是数字，也必须加引号，"
+            "例如传 \"4813704555\"，不要传 4813704555。"
+        ),
+    )
 
 
 @agent_tool(
@@ -38,6 +44,8 @@ class TransferConversationParams(BaseModel):
         "平台介入、投诉举报，或售后处理动作明确返回需要转人工。"
         "客户明确要求人工、人工客服、售后专员、售后处理、联系人工、转人工时，应直接调用。"
         "客户出现已签收异常、坏了不能用、噪音大、风力小、充不进电、少件漏发、退款/退货/赔付等明确售后诉求时，也应优先转人工。"
+        "调用本工具时，所有 ID 参数都必须按字符串传入；纯数字 ID 也必须加引号，"
+        "尤其 recipient_uid 必须传字符串，例如 \"4813704555\"，不能传数字 4813704555。"
     ),
     param_model=TransferConversationParams,
 )

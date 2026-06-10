@@ -52,7 +52,7 @@ class SearchKnowledgeParams(BaseModel):
 
 @agent_tool(
     name="search_knowledge",
-    description="查询当前商品知识。客户问商品参数、续航、充电、发货、物流、退换货、售后处理等问题时使用。",
+    description="查询当前商品知识。客户问商品参数、功能、图片里的按键/图标/部件用途、续航、充电、发货、物流、退换货、售后处理等问题时使用。",
     param_model=SearchKnowledgeParams,
 )
 def search_knowledge(params: SearchKnowledgeParams) -> str:

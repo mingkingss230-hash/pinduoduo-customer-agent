@@ -149,15 +149,18 @@ class LLMClient:
 
     @staticmethod
     def _should_disable_chat_template_thinking_for(api_base: str, model_name: str) -> bool:
-        """MiMo/local chat templates need thinking disabled, otherwise content can be empty."""
+        """Thinking models can spend the whole completion budget on reasoning."""
         api_base = str(api_base or "").lower()
         model_name = str(model_name or "").lower()
         return (
             "127.0.0.1" in api_base
             or "localhost" in api_base
             or "xiaomimimo.com" in api_base
+            or "siliconflow.cn" in api_base
             or model_name.startswith("mimo-")
             or model_name.startswith("glm-")
+            or model_name.startswith("qwen/")
+            or model_name.startswith("nex-agi/")
         )
 
     def _should_disable_chat_template_thinking(self) -> bool:
@@ -270,6 +273,7 @@ class LLMClient:
         # 禁用 thinking 模式，避免 reasoning 吃光 tokens
         if self._should_disable_chat_template_thinking():
             payload["extra_body"] = {
+                "enable_thinking": False,
                 "chat_template_kwargs": {
                     "enable_thinking": False,
                 }
@@ -337,6 +341,7 @@ class LLMClient:
                     self.fallback_model_name,
                 ):
                     fallback_payload["extra_body"] = {
+                        "enable_thinking": False,
                         "chat_template_kwargs": {
                             "enable_thinking": False,
                         }

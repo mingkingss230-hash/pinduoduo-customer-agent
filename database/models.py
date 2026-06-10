@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean, UniqueConstraint, Index, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
@@ -129,7 +129,7 @@ class KnowledgeMetaEntry(Base):
     source_type = Column(String(50), nullable=False, comment='来源类型: product/customer_service')
     source_id = Column(Integer, nullable=False, comment='来源记录ID')
     goods_id = Column(Integer, nullable=True, comment='商品ID，可为空')
-    product_family = Column(String(100), nullable=True, comment='商品族/产品系列')
+    product_family = Column(String(100), nullable=True, comment='商品族，如 m11/x688')
     scenario = Column(String(100), nullable=False, comment='场景')
     sub_intent = Column(String(100), nullable=True, comment='子意图')
     aliases = Column(Text, nullable=False, comment='问法别名集合')
@@ -159,7 +159,7 @@ class _SceneKnowledgeMixin:
     id = Column(Integer, primary_key=True, autoincrement=True)
     shop_id = Column(Integer, ForeignKey('shops.id', ondelete='CASCADE'), nullable=False, comment='店铺ID')
     goods_id = Column(Integer, nullable=True, comment='商品ID，NULL=店铺通用')
-    product_family = Column(String(50), nullable=True, comment='商品族/产品系列')
+    product_family = Column(String(50), nullable=True, comment='商品族 m11/x688/120/607/ds18')
     sub_intent = Column(String(100), nullable=True, comment='细分意图')
     aliases = Column(Text, nullable=False, comment='问法列表，/分隔')
     answer = Column(Text, nullable=False, comment='标准答案')
@@ -209,6 +209,32 @@ class AftersaleKnowledge(Base, _SceneKnowledgeMixin):
         Index('ix_aftersale_goods', 'shop_id', 'goods_id', 'enabled', 'priority'),
         Index('ix_aftersale_family', 'shop_id', 'product_family', 'enabled'),
         Index('ix_aftersale_intent', 'shop_id', 'sub_intent', 'enabled'),
+    )
+
+
+class SceneKnowledgeEmbedding(Base):
+    """场景知识 embedding 表，用于混合检索。"""
+    __tablename__ = 'scene_knowledge_embeddings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scene = Column(String(20), nullable=False, comment='场景: presale/insale/aftersale')
+    knowledge_table = Column(String(50), nullable=False, comment='来源表名')
+    knowledge_id = Column(Integer, nullable=False, comment='来源表主键')
+    shop_id = Column(Integer, nullable=False, comment='店铺ID')
+    goods_id = Column(Integer, nullable=True, comment='商品ID')
+    embedding_text = Column(Text, nullable=False, comment='用于生成 embedding 的文本')
+    embedding = Column(LargeBinary, nullable=False, comment='float32 向量 BLOB')
+    embedding_model = Column(String(100), nullable=False, comment='embedding 模型名')
+    embedding_dim = Column(Integer, nullable=True, comment='向量维度')
+    content_hash = Column(String(64), nullable=False, comment='embedding_text 的 sha256')
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('scene', 'knowledge_table', 'knowledge_id', 'content_hash',
+                         name='uix_scene_kb_embed_dedup'),
+        Index('ix_ske_shop_goods_scene', 'shop_id', 'goods_id', 'scene'),
+        Index('ix_ske_table_id', 'knowledge_table', 'knowledge_id'),
     )
 
 

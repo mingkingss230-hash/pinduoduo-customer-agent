@@ -23,6 +23,27 @@ FORBIDDEN_REPLY_REPLACEMENTS = {
     "运费险": "退货包运费服务",
 }
 
+# 内部术语：含这些词的整句删除
+_INTERNAL_TERM_PATTERNS = (
+    "知识库",
+    "RAG",
+    "rag",
+    "预检索",
+    "检索结果",
+    "未提供明确数据",
+    "未提供具体数据",
+    "系统判断",
+    "未找到相关",
+)
+
+# 版本名幻觉：40000M/10000M 被错误说成毫安容量
+_VERSION_NAME_HALLUCINATION_RE = re.compile(
+    r"(?:40000|30000|20000|10000)\s*(?:毫安|mAh|MAH|mah)",
+    re.IGNORECASE,
+)
+
+_SAFE_FALLBACK_REPLY = "亲，这边帮您确认一下，稍后回复您哦。"
+
 
 @dataclass
 class KnowledgeAction:
@@ -104,6 +125,39 @@ def route_customer_service_knowledge(formatted_knowledge: str, query: str = "") 
     return RoutedKnowledge(sanitized_text=sanitize_formatted_knowledge(formatted_knowledge))
 
 
+def _remove_sentences_with_internal_terms(text: str) -> str:
+    """删除含内部术语的整句，保留其余句子。"""
+    # 按中文句号、感叹号、问号分句
+    sentences = re.split(r"(?<=[。！？!?])", text)
+    kept = []
+    for s in sentences:
+        s_stripped = s.strip()
+        if not s_stripped:
+            continue
+        if any(term in s_stripped for term in _INTERNAL_TERM_PATTERNS):
+            continue
+        kept.append(s_stripped)
+    return "".join(kept)
+
+
+def _fix_version_name_hallucination(text: str) -> str:
+    """修正版本名幻觉：40000M/10000M 不等于毫安容量。"""
+    if not _VERSION_NAME_HALLUCINATION_RE.search(text):
+        return text
+    # 按句处理：含版本名幻觉的整句替换为安全表述
+    sentences = re.split(r"(?<=[。！？!?])", text)
+    kept = []
+    for s in sentences:
+        s_stripped = s.strip()
+        if not s_stripped:
+            continue
+        if _VERSION_NAME_HALLUCINATION_RE.search(s_stripped):
+            kept.append("具体容量以页面当前规格标注为准")
+        else:
+            kept.append(s_stripped)
+    return "".join(kept)
+
+
 def sanitize_final_reply(reply: str) -> str:
     """Final safety pass before sending text to the customer."""
     raw = str(reply or "")
@@ -115,5 +169,17 @@ def sanitize_final_reply(reply: str) -> str:
         text = text.replace(term, "")
     for forbidden, replacement in FORBIDDEN_REPLY_REPLACEMENTS.items():
         text = text.replace(forbidden, replacement)
+
+    # 内部术语句删除
+    text = _remove_sentences_with_internal_terms(text)
+
+    # 版本名幻觉修正
+    text = _fix_version_name_hallucination(text)
+
     text = re.sub(r"\s+", " ", text).strip()
+
+    # 清空后兜底
+    if not text or len(text) < 2:
+        return _SAFE_FALLBACK_REPLY
+
     return text

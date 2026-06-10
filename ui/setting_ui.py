@@ -215,9 +215,9 @@ class PromptConfigCard(CardWidget):
 
 class ScenePromptConfigCard(CardWidget):
     PROMPT_FILES = {
-        "presale": "runtime/scene_prompts_review/presale_prompt.txt",
-        "insale": "runtime/scene_prompts_review/insale_prompt.txt",
-        "aftersale": "runtime/scene_prompts_review/aftersale_prompt.txt",
+        "presale": "runtime/scene_prompts_review/m11_售前场景prompt_待审.txt",
+        "insale": "runtime/scene_prompts_review/m11_售中场景prompt_待审.txt",
+        "aftersale": "runtime/scene_prompts_review/m11_售后场景prompt_待审.txt",
     }
 
     def __init__(self, parent=None):

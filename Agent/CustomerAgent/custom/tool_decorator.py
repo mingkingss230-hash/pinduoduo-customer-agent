@@ -157,6 +157,12 @@ def execute_tool(
                 params[field_name] = dependencies[field_name]
             # 字段为 Optional 且 default=None，不提供则留空
 
+        # LLM 常把纯数字 UID 当成 number 输出；工具侧统一兜底成字符串，避免 Pydantic 校验失败。
+        id_string_fields = {"shop_id", "user_id", "recipient_uid"}
+        for field_name in id_string_fields:
+            if field_name in params and params[field_name] is not None:
+                params[field_name] = str(params[field_name]).strip()
+
         # 使用 Pydantic 模型验证参数（会自动处理 Optional 字段）
         validated = entry.param_model(**params)
 

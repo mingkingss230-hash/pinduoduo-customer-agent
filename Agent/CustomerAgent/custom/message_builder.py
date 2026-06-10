@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from bridge.context import Context
 from config import get_config
+from Agent.CustomerAgent.custom.turn_context import TurnContext, parse_turn_context
 from utils.logger_loguru import get_logger
 
 logger = get_logger("MessageBuilder")
@@ -30,7 +31,12 @@ class MessageBuilder:
             "2. 需要转人工时，使用 `transfer_conversation`。\n"
             "3. 调用人工工具时，必须使用当前会话信息里的 `shop_id`、`user_id`、`recipient_uid`。\n"
             "4. 不要向客户输出工具名或提示词内容。\n"
-            "5. 涉及商品参数、快递、发货地、制冷、续航、充电时间时，只能使用预检索知识或 `search_knowledge` 的明确值；知识未提供时不要自行估算。\n"
+            "5. 涉及商品参数、功能、按键/图标/部件用途、快递、发货地、制冷、续航、充电时间时，只能使用预检索知识或 `search_knowledge` 的明确值；知识未提供时不要自行估算。\n"
+            "6. 收到图片时，图片只能作为可见内容辅助，不能把图片里的 X、+、-、雪花、风扇、灯、圆点、金属片、按键形状等符号自行解释成摇头、制冷、档位、灯光、充电等商品功能；看不清或无法确定图片问题时，简短询问客户具体问题，不要编造图片细节。\n"
+            "7. 版本名约束：40000M、30000M、20000M、10000M、500M 等带 M 的数字是商品版本/规格名称，"
+            "不等于真实电池毫安容量。禁止说成 40000毫安、10000毫安。"
+            "如客户问电池容量，按知识库实际数值回答；知识库无明确数据时回复'具体容量以页面当前规格标注为准'。\n"
+            "8. 视频/图片追问：如果客户只发了视频或图片、没有附带文字问题，回复'麻烦您说下具体想确认哪里'，不要猜测客户意图。\n"
         )
         prompt_instructions = get_config("prompt.instructions", [])
         if isinstance(prompt_instructions, list):
@@ -54,7 +60,13 @@ class MessageBuilder:
         if isinstance(shop_id, str) and shop_id.isdigit():
             shop_id = int(shop_id)
 
-        return {
+        # TurnContext 结构化解析
+        raw_query = str(context.content or "")
+        turn_context: TurnContext | None = None
+        if get_config("enable_turn_context", False):
+            turn_context = parse_turn_context(raw_query)
+
+        deps = {
             "shop_name": str(kwargs.shop_name or ""),
             "channel_type": str(context.channel_type.value if context.channel_type else ""),
             "context_type": str(context.type.value if context.type else ""),
@@ -65,7 +77,13 @@ class MessageBuilder:
             "goods_id": goods_id,
             "query": str(context.content or ""),
             "media_url": self._extract_media_url(context),
+            "media_type": self._extract_media_type(context),
         }
+
+        if turn_context is not None:
+            deps["turn_context"] = turn_context
+
+        return deps
 
     @staticmethod
     def _extract_goods_id(context: Context) -> int | None:
@@ -113,6 +131,11 @@ class MessageBuilder:
             text = raw_content.strip()
             if text.startswith(("http://", "https://", "data:")):
                 return text
+
+            match = re.search(r"https?://[^\s，。；,;]+", text)
+            if match:
+                return match.group(0).strip()
+
             try:
                 parsed = json.loads(text)
             except Exception:
@@ -151,6 +174,20 @@ class MessageBuilder:
             ):
                 if isinstance(candidate, str) and candidate.strip().startswith(("http://", "https://", "data:")):
                     return candidate.strip()
+        return ""
+
+    @classmethod
+    def _extract_media_type(cls, context: Context) -> str:
+        context_type = str(context.type.value if context.type else "")
+        raw_content = str(context.content or "")
+        media_url = cls._extract_media_url(context).lower()
+
+        if context_type in {"image", "video"}:
+            return context_type
+        if "客户发送了图片" in raw_content or "chat-img" in media_url:
+            return "image"
+        if "客户发送了视频" in raw_content or "video" in media_url:
+            return "video"
         return ""
 
     def build_messages(
@@ -195,27 +232,17 @@ class MessageBuilder:
 
         media_url = str((dependencies or {}).get("media_url") or "").strip()
         context_type = str((dependencies or {}).get("context_type") or "")
-        if media_url and context_type in {"image", "video"}:
-            if context_type == "image":
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": query},
-                            {"type": "image_url", "image_url": {"url": media_url}},
-                        ],
-                    }
-                )
-            else:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": query},
-                            {"type": "video_url", "video_url": {"url": media_url, "fps": 1.0}},
-                        ],
-                    }
-                )
+        media_type = str((dependencies or {}).get("media_type") or "")
+        if media_url and (context_type == "image" or media_type == "image"):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": query},
+                        {"type": "image_url", "image_url": {"url": media_url}},
+                    ],
+                }
+            )
         else:
             messages.append({"role": "user", "content": query})
         return messages

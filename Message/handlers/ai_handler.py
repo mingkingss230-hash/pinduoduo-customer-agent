@@ -11,6 +11,26 @@ from Agent.bot import Bot
 from Agent.CustomerAgent.custom.knowledge_action_router import sanitize_final_reply
 
 
+_INTERNAL_CONTEXT_PREFIXES = (
+    "上一条客户问题：",
+    "上一条客户消息：",
+    "上次客户问题：",
+    "上次客户消息：",
+)
+
+
+def is_internal_context_only_message(text: str) -> bool:
+    """判断消息是否为系统内部补充上下文（非真实客户消息）。
+
+    匹配规则：去除首尾空白后，文本以已知内部前缀开头。
+    不使用 contains 避免误伤客户正常提问。
+    """
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    return any(stripped.startswith(prefix) for prefix in _INTERNAL_CONTEXT_PREFIXES)
+
+
 class AIReplyHandler(BaseHandler):
     """专注的AI回复处理器"""
 
@@ -48,12 +68,20 @@ class AIReplyHandler(BaseHandler):
             # 1. 预处理消息
             processed_content = self.preprocessor.process(context.content, context.type)
 
+            # 1.5 过滤内部补充上下文，不触发 AI 回复
+            if is_internal_context_only_message(processed_content):
+                self.logger.info(f"跳过内部补充消息，不触发AI回复: {processed_content[:80]}")
+                return True
+
             # 2. 调用AI生成回复
             reply = await self._get_ai_reply(processed_content, context)
             if not reply:
                 self.logger.warning("AI回复生成失败，使用备用回复")
                 return await self._handle_fallback(context, metadata)
             reply = sanitize_final_reply(reply)
+            if not reply or not str(reply).strip():
+                self.logger.warning("AI回复安全过滤后为空，使用备用回复")
+                return await self._handle_fallback(context, metadata)
 
             # 3. 发送回复
             success = await self._send_reply(context, reply, metadata)

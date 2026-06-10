@@ -23,10 +23,11 @@ from Agent.CustomerAgent.tools import (
     search_knowledge,                 # noqa: F401  — 注册 search_knowledge 工具
     send_product_card,                # noqa: F401  — 注册 send_product_card 工具
 )
+from config import get_config
 from bridge.context import Context
 from bridge.reply import Reply, ReplyType
 from Agent.CustomerAgent.custom.session_manager import SessionManager
-from Agent.CustomerAgent.custom.tool_decorator import get_tools_for_llm
+from Agent.CustomerAgent.custom.tool_decorator import execute_tool, get_tools_for_llm
 from database.knowledge_service import KnowledgeService
 from utils.logger_loguru import get_logger
 from utils.runtime_path import get_resource_path
@@ -45,13 +46,15 @@ from Agent.CustomerAgent.custom.agent_config import (
 from Agent.CustomerAgent.custom.llm_client import LLMClient, LLMResponse
 from Agent.CustomerAgent.custom.message_builder import MessageBuilder
 from Agent.CustomerAgent.custom.tool_executor import ToolExecutor, ToolResult
+from Agent.CustomerAgent.custom.knowledge_action_router import sanitize_final_reply
+from Agent.CustomerAgent.custom.turn_context import TurnContext, parse_turn_context
 from utils.night_mode import NIGHT_MODE_TRANSFER_RESULT_PREFIX, is_night_mode
 
 logger = get_logger("CustomerAgent")
 SCENE_PROMPT_FILES = {
-    "presale": "runtime/scene_prompts_review/presale_prompt.txt",
-    "insale": "runtime/scene_prompts_review/insale_prompt.txt",
-    "aftersale": "runtime/scene_prompts_review/aftersale_prompt.txt",
+    "presale": "runtime/scene_prompts_review/m11_售前场景prompt_待审.txt",
+    "insale": "runtime/scene_prompts_review/m11_售中场景prompt_待审.txt",
+    "aftersale": "runtime/scene_prompts_review/m11_售后场景prompt_待审.txt",
 }
 
 
@@ -198,21 +201,22 @@ class CustomerAgent(Bot):
             elif session_id in self._session_goods_id_cache:
                 dependencies["goods_id"] = self._session_goods_id_cache[session_id]
 
+            # TurnContext: log-only 模式
+            turn_context = dependencies.get("turn_context")
+            if turn_context is None and get_config("enable_turn_context", False):
+                turn_context = parse_turn_context(str(query or ""))
+                dependencies["turn_context"] = turn_context
+            if turn_context is not None and get_config("enable_turn_context_log_only", True):
+                self._log_turn_context(session_id, turn_context)
+
             await self._refresh_order_context(dependencies)
 
-            # 加载历史并检查压缩
+            # 加载历史并检查压缩；场景判定需要历史和订单上下文。
             history = self._session_manager.get_history(session_id)
             if self._session_manager.should_compress(session_id):
                 logger.info(f"触发上下文压缩: session_id={session_id}")
                 await self._compress_with_llm(session_id, history)
 
-            # 构建 messages
-            messages = self._message_builder.build_messages(query, history, dependencies)
-            self._session_manager.add_message(
-                session_id=session_id,
-                role="user",
-                content=query,
-            )
             customer_scene = self._resolve_customer_scene(query, history, dependencies)
             dependencies["_customer_scene"] = customer_scene
             logger.info(
@@ -225,12 +229,68 @@ class CustomerAgent(Bot):
                     str(query or "")[:80],
                 )
             )
+
+            # 售后场景收到图片/视频时，直接转人工，避免模型看图/看视频臆断。
+            if customer_scene == "aftersale" and self._has_media_input(dependencies):
+                self._session_manager.add_message(
+                    session_id=session_id,
+                    role="user",
+                    content=query,
+                )
+                final_content = await self._transfer_to_human(dependencies, session_id, reason="aftersale_media")
+                self._session_manager.add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=final_content,
+                )
+                return Reply(ReplyType.TEXT, final_content)
+
+            # 售后场景反馈找不到充电口/插电口时，直接转人工，避免模型编造接口位置。
+            if customer_scene == "aftersale" and self._is_charge_port_aftersale_issue(query):
+                self._session_manager.add_message(
+                    session_id=session_id,
+                    role="user",
+                    content=query,
+                )
+                final_content = await self._transfer_to_human(
+                    dependencies,
+                    session_id,
+                    reason="charge_port_issue",
+                )
+                self._session_manager.add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=final_content,
+                )
+                return Reply(ReplyType.TEXT, final_content)
+
+            # 视频/图片无文字时直接追问，不走 LLM
+            if self._is_media_only_query(query, dependencies):
+                return Reply(ReplyType.TEXT, "麻烦您说下具体想确认哪里")
+
+            # 构建 messages
+            messages = self._message_builder.build_messages(query, history, dependencies)
+            self._session_manager.add_message(
+                session_id=session_id,
+                role="user",
+                content=query,
+            )
             self._append_scene_prompt(messages, customer_scene)
+            self._append_night_mode_constraint(messages)
+            self._append_order_hard_constraints(messages, customer_scene, dependencies, session_id, query)
+            self._append_image_grounding_constraint(messages, dependencies, session_id)
             self._inject_pre_retrieved_knowledge(messages, query, dependencies, customer_scene)
+            self._append_missing_goods_knowledge_constraint(messages, query, dependencies, session_id)
 
             # 执行 Agent 循环
             final_content = await self._run_agent_loop(messages, dependencies)
             final_content = self._sanitize_daytime_night_mode_reply(final_content, messages)
+            final_content = sanitize_final_reply(final_content)
+
+            # 回复去重：与最近一条 assistant 回复比较
+            final_content = await self._dedup_reply(
+                final_content, messages, history, session_id,
+            )
             logger.info(
                 "[最终回复] session={} scene={} reply_len={}".format(
                     session_id,
@@ -284,6 +344,8 @@ class CustomerAgent(Bot):
             "夜间时段",
             "夜间不转人工",
             "高级客服已下班",
+            "高级客服下班了",
+            "高级客服目前下班",
             "当前高级客服不在线",
             "还没上班",
             "上班时间是早上8点",
@@ -300,19 +362,35 @@ class CustomerAgent(Bot):
             for msg in messages
             if isinstance(msg, dict) and msg.get("role") == "tool"
         ]
-        if any(text.startswith(NIGHT_MODE_TRANSFER_RESULT_PREFIX) for text in tool_contents):
-            return reply
-
         logger.warning(f"非夜间回复包含夜间话术，已清理: reply={reply[:120]}")
         if any(text.strip() == "会话转接成功" for text in tool_contents):
             return "亲，已经为您转接人工客服，会尽快为您处理，请稍等一下～"
 
         cleaned = re.sub(
-            r"[^。！？!?]*?(夜间时段|夜间不转人工|高级客服已下班|当前高级客服不在线|还没上班|上班时间[是为]?早上8点|高级客服上班时间|建议您晚点(?:再)?联系)[^。！？!?]*[。！？!?]?",
+            r"[^。！？!?]*?(夜间时段|夜间不转人工|高级客服已下班|高级客服(?:目前)?下班了|高级客服目前下班|当前高级客服不在线|还没上班|上班时间[是为]?早上8点|高级客服上班时间|建议您晚点(?:再)?联系)[^。！？!?]*[。！？!?]?",
             "",
             reply,
         ).strip(" ，,。.!！~～")
         return cleaned or "亲，客服正在为您处理，请稍等片刻哦～"
+
+    @staticmethod
+    def _log_turn_context(session_id: str, tc: TurnContext) -> None:
+        """log-only 模式：记录 TurnContext 结构化数据，不参与回复流程。"""
+        logger.info(
+            "[TurnContext] session={session} customer_text={ct} "
+            "has_product_card={hpc} has_order_card={hoc} has_media={hm} "
+            "goods_id={gid} order_sn={osn} scene={scene} warnings={warn}".format(
+                session=session_id,
+                ct=str(tc.customer_text or "")[:80],
+                hpc=tc.turn_type.has_product_card,
+                hoc=tc.turn_type.has_order_card,
+                hm=tc.turn_type.has_media,
+                gid=tc.product_card.goods_id or "",
+                osn=tc.order_card.order_sn or "",
+                scene=tc.raw_scene_hint or "",
+                warn=tc.parse_warnings,
+            )
+        )
 
     async def _run_agent_loop(
         self,
@@ -393,7 +471,20 @@ class CustomerAgent(Bot):
                 response.tool_calls, dependencies
             )
 
-            # 6. 将结果追加到消息列表
+            # 6. 夜间转人工结果直接返回，不交给 LLM 二次生成
+            for result in tool_results:
+                if result.content and result.content.startswith(NIGHT_MODE_TRANSFER_RESULT_PREFIX):
+                    # 提取前缀后的客户可见回复
+                    night_reply = result.content
+                    sep_idx = night_reply.find("：")
+                    if sep_idx != -1:
+                        night_reply = night_reply[sep_idx + 1:]
+                    night_reply = night_reply.strip()
+                    if night_reply:
+                        logger.info(f"[夜间转人工直返] reply={night_reply[:80]}")
+                        return night_reply
+
+            # 7. 将结果追加到消息列表
             for result in tool_results:
                 messages.append(result.to_dict())
 
@@ -416,6 +507,8 @@ class CustomerAgent(Bot):
         order_scene = str(dependencies.get("order_scene_hint") or "")
         if order_scene in {"aftersale", "insale"}:
             return order_scene
+        if order_scene == "mixed_orders":
+            return "aftersale"
 
         combined = str(query or "")
         recent_user_text = " ".join(
@@ -505,6 +598,324 @@ class CustomerAgent(Bot):
                 messages[0]["content"] = f"{existing}\n\n{scene_note}" if existing else scene_note
         else:
             messages.insert(0, {"role": "system", "content": scene_note})
+
+    _SIGNED_TRACE_KEYWORDS = (
+        "包裹已签收",
+        "快件已签收",
+        "签收人是",
+        "已签收",
+        "已收货",
+        "已取件",
+    )
+
+    @classmethod
+    def _is_order_signed(cls, dependencies: Dict[str, Any]) -> bool:
+        """判断订单是否已签收。"""
+        if dependencies.get("order_shipping_status") == "signed":
+            return True
+        biz = str(dependencies.get("order_business_status") or "")
+        if "已签收" in biz or "已收货" in biz:
+            return True
+        trace = str(dependencies.get("order_latest_trace") or "")
+        if any(kw in trace for kw in cls._SIGNED_TRACE_KEYWORDS):
+            return True
+        return False
+
+    _ORDER_HARD_CONSTRAINT = (
+        '【订单硬约束】\n'
+        '系统根据订单状态和最新物流判断：当前客户已收到商品。\n'
+        '禁止使用"收到货后、等收到后、到货后、拿到货后、先试用、先试试"等暗示客户尚未收到商品的话术。\n'
+        '如果客户反馈商品问题，例如噪音、异响、风小、不转、充不进电、坏了，应按售后问题处理；'
+        '无法直接解决时使用转人工工具。\n'
+    )
+
+    _USAGE_FEEDBACK_KEYWORDS = (
+        "好响", "声音大", "噪音大", "吵", "滋滋", "异响",
+        "没反应", "坏了", "不转", "充不进", "充不上",
+        "正在用", "收到", "收到货", "已收到",
+        "风小", "没风", "风力小",
+    )
+
+    def _append_order_hard_constraints(
+        self,
+        messages: List[Dict[str, Any]],
+        customer_scene: str,
+        dependencies: Dict[str, Any],
+        session_id: str,
+        query: str = "",
+    ) -> None:
+        """已签收或客户有使用反馈时注入订单硬约束（所有场景）。"""
+        scene = KnowledgeService.normalize_customer_scene(customer_scene)
+        is_signed = self._is_order_signed(dependencies)
+        has_usage_feedback = any(kw in str(query or "") for kw in self._USAGE_FEEDBACK_KEYWORDS)
+
+        if not is_signed and not has_usage_feedback:
+            return
+        # presale 场景且无签收信息时跳过（避免纯售前咨询误注入）
+        if scene == "presale" and not is_signed:
+            return
+
+        order_id = dependencies.get("order_id") or ""
+        shipping = dependencies.get("order_shipping_status") or ""
+        logger.info(
+            "[订单硬约束] aftersale signed injected: session={} order_id={} shipping_status={}".format(
+                session_id, order_id, shipping,
+            )
+        )
+
+        if messages and messages[0].get("role") == "system":
+            existing = str(messages[0].get("content") or "").strip()
+            if self._ORDER_HARD_CONSTRAINT not in existing:
+                messages[0]["content"] = f"{existing}\n\n{self._ORDER_HARD_CONSTRAINT}"
+        else:
+            messages.insert(0, {"role": "system", "content": self._ORDER_HARD_CONSTRAINT})
+
+    _MISSING_GOODS_PARAMETER_KEYWORDS = (
+        "续航",
+        "用多久",
+        "能用多久",
+        "充一次电",
+        "充满",
+        "几个小时",
+        "电池多大",
+        "电池容量",
+        "多少毫安",
+        "几毫安",
+        "毫安",
+        "mah",
+        "几档",
+        "多少档",
+        "档位",
+        "最高档",
+        "最大档",
+        "风大",
+        "风力",
+        "风速",
+        "凉快",
+        "制冷",
+        "半导体",
+        "挂绳",
+        "挂脖",
+        "底座",
+        "支架",
+        "充电头",
+        "充电线",
+        "充电器",
+        "配件",
+        "按键",
+        "按钮",
+        "开关",
+        "图标",
+        "标识",
+        "中间",
+        "摇头",
+        "怎么用",
+        "颜色",
+        "库存",
+        "快递",
+        "发货地",
+        "哪里发货",
+    )
+    _MISSING_GOODS_KNOWLEDGE_CONSTRAINT = (
+        "【商品知识状态】\n"
+        "当前会话没有识别到 goods_id，无法加载该商品的专属知识。\n"
+        "如果客户询问续航、电池容量、档位、按键/图标/功能、颜色、配件、发货地、快递等依赖具体商品的信息，"
+        "不要根据商品名、昵称、图片符号或经验猜测具体参数，不要编造小时数、毫安数、档位数、功能或赠品承诺。\n"
+        "应回复：亲，不同款式/规格参数会不一样，麻烦您发一下具体商品链接或点一下商品卡片，我按对应款式帮您确认哦。\n"
+        "不要向客户提到“知识库、goods_id、系统无法加载、商品知识状态”等内部信息。\n"
+    )
+
+    @classmethod
+    def _is_missing_goods_id(cls, dependencies: Dict[str, Any]) -> bool:
+        goods_id = dependencies.get("goods_id")
+        if goods_id is None:
+            return True
+        text = str(goods_id).strip().lower()
+        return text in {"", "none", "null", "0"}
+
+    @classmethod
+    def _is_product_parameter_query(cls, query: str) -> bool:
+        text = str(query or "").lower()
+        return any(keyword in text for keyword in cls._MISSING_GOODS_PARAMETER_KEYWORDS)
+
+    def _append_missing_goods_knowledge_constraint(
+        self,
+        messages: List[Dict[str, Any]],
+        query: str,
+        dependencies: Dict[str, Any],
+        session_id: str,
+    ) -> None:
+        """无 goods_id 的商品参数问题注入约束，避免模型编造具体商品参数。"""
+        if not self._is_missing_goods_id(dependencies):
+            return
+        if not self._is_product_parameter_query(query):
+            return
+
+        logger.info(
+            "[无商品知识约束] injected: session={} shop_id={} query={}".format(
+                session_id,
+                dependencies.get("shop_id"),
+                str(query or "")[:80],
+            )
+        )
+        messages.append({"role": "system", "content": self._MISSING_GOODS_KNOWLEDGE_CONSTRAINT})
+
+    _NIGHT_MODE_FAULT_CONSTRAINT = (
+        '【夜间模式约束】\n'
+        '当前为夜间值守时段（23:00-08:00），无法转接人工客服。\n'
+        '禁止回复"已为您转接""稍后会有专员""已转人工"等虚假转接话术。\n'
+        '如果客户反馈商品故障（坏了、没反应、不转、充不进电、噪音大），'
+        '应回复：已记录您的问题，夜间无法转接人工，建议您早上8点后联系，会有专人为您处理。\n'
+        '如果客户反复反馈同一问题，不要重复相同话术，简短确认已记录即可。\n'
+    )
+
+    _IMAGE_GROUNDING_CONSTRAINT = (
+        "【图片理解硬约束】\n"
+        "图片只能作为客户现场/截图的辅助信息，不是商品功能依据。\n"
+        "禁止根据图片里的 X、+、-、雪花、风扇、灯、圆点、金属片、按键形状等视觉符号，"
+        "推断摇头、制冷、档位、灯光、充电等商品功能。\n"
+        "客户问图中按钮、图标、标识、部件用途时，必须以预检索知识或 search_knowledge 的明确答案为准；"
+        "没有明确答案时回复：亲，仅凭图片看不出这个位置的具体功能，麻烦您说下是哪个按键/位置，或点一下商品卡片，我按对应款式帮您确认哦。\n"
+        "不要说“X 是摇头功能”等没有知识依据的结论。\n"
+        "不要向客户提到图片理解硬约束、预检索、search_knowledge、知识库等内部信息。\n"
+    )
+
+    @staticmethod
+    def _has_media_input(dependencies: Dict[str, Any]) -> bool:
+        """判断本轮是否包含图片或视频。"""
+        context_type = str(dependencies.get("context_type") or "")
+        media_type = str(dependencies.get("media_type") or "")
+        media_url = str(dependencies.get("media_url") or "").lower()
+        if context_type in {"image", "video"} or media_type in {"image", "video"}:
+            return True
+        return bool(media_url and ("chat-img" in media_url or "video" in media_url))
+
+    @staticmethod
+    def _has_image_input(dependencies: Dict[str, Any]) -> bool:
+        context_type = str(dependencies.get("context_type") or "")
+        media_type = str(dependencies.get("media_type") or "")
+        media_url = str(dependencies.get("media_url") or "")
+        return context_type == "image" or media_type == "image" or bool(media_url and "chat-img" in media_url)
+
+    _CHARGE_PORT_AFTERSALE_ISSUE_KEYWORDS = (
+        "没有充电口",
+        "没充电口",
+        "怎么没有充电口",
+        "找不到充电口",
+        "充电口在哪",
+        "充电口在哪里",
+        "充电口在那",
+        "充电口在哪儿",
+        "没有插电口",
+        "没插电口",
+        "找不到插电口",
+        "插电口在哪",
+        "插电口在哪里",
+        "插电口在那",
+        "插电口在哪儿",
+        "在哪里插电",
+        "在哪插电",
+        "哪里插电",
+    )
+
+    @classmethod
+    def _is_charge_port_aftersale_issue(cls, query: str) -> bool:
+        text = str(query or "").replace(" ", "")
+        return any(keyword in text for keyword in cls._CHARGE_PORT_AFTERSALE_ISSUE_KEYWORDS)
+
+    @staticmethod
+    def _is_media_only_query(query: str, dependencies: Dict[str, Any]) -> bool:
+        """判断是否只有图片/视频、没有文字问题。"""
+        context_type = str(dependencies.get("context_type") or "")
+        media_type = str(dependencies.get("media_type") or "")
+        is_media = context_type in {"image", "video"} or media_type in {"image", "video"}
+        if not is_media:
+            return False
+        # 检查 query 是否包含客户实际文字（排除 URL、[视频消息]、[图片消息] 等）
+        text = str(query or "").strip()
+        # 去掉 URL
+        text_no_url = re.sub(r"https?://[^\s]+", "", text).strip()
+        # 去掉标记
+        text_no_url = re.sub(r"\[(视频|图片|video|image)消息\]", "", text_no_url, flags=re.IGNORECASE).strip()
+        text_no_url = re.sub(r"客户消息[：:]\s*", "", text_no_url).strip()
+        text_no_url = re.sub(r"客户发送了(图片|视频)[：:]*\s*", "", text_no_url).strip()
+        return len(text_no_url) < 2
+
+    def _append_image_grounding_constraint(
+        self,
+        messages: List[Dict[str, Any]],
+        dependencies: Dict[str, Any],
+        session_id: str,
+    ) -> None:
+        """有图片输入时约束模型不要把可见符号臆断为商品功能。"""
+        if not self._has_image_input(dependencies):
+            return
+
+        logger.info(
+            "[图片硬约束] injected: session={} shop_id={} goods_id={} media_type={}".format(
+                session_id,
+                dependencies.get("shop_id"),
+                dependencies.get("goods_id"),
+                dependencies.get("media_type"),
+            )
+        )
+        if messages and messages[0].get("role") == "system":
+            existing = str(messages[0].get("content") or "").strip()
+            if self._IMAGE_GROUNDING_CONSTRAINT not in existing:
+                messages[0]["content"] = (
+                    f"{existing}\n\n{self._IMAGE_GROUNDING_CONSTRAINT}"
+                    if existing
+                    else self._IMAGE_GROUNDING_CONSTRAINT
+                )
+        else:
+            messages.insert(0, {"role": "system", "content": self._IMAGE_GROUNDING_CONSTRAINT})
+
+    def _append_night_mode_constraint(self, messages: List[Dict[str, Any]]) -> None:
+        """夜间模式时注入约束，防止 LLM 生成虚假转接话术。"""
+        if not is_night_mode():
+            return
+        if messages and messages[0].get("role") == "system":
+            existing = str(messages[0].get("content") or "").strip()
+            if self._NIGHT_MODE_FAULT_CONSTRAINT not in existing:
+                messages[0]["content"] = f"{existing}\n\n{self._NIGHT_MODE_FAULT_CONSTRAINT}"
+        else:
+            messages.insert(0, {"role": "system", "content": self._NIGHT_MODE_FAULT_CONSTRAINT})
+
+    async def _transfer_to_human(
+        self,
+        dependencies: Dict[str, Any],
+        session_id: str,
+        reason: str,
+    ) -> str:
+        """高风险问题直转人工，不经过 LLM。"""
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            execute_tool,
+            "transfer_conversation",
+            "{}",
+            dependencies,
+        )
+        content = str(result or "").strip()
+        logger.info(f"[售后直转人工] session={session_id} reason={reason} result={content[:120]}")
+
+        if content.startswith(NIGHT_MODE_TRANSFER_RESULT_PREFIX):
+            sep_idx = content.find("：")
+            if sep_idx != -1:
+                content = content[sep_idx + 1:]
+            content = content.strip()
+            if content:
+                return sanitize_final_reply(content)
+
+        if "会话转接成功" in content:
+            return "亲，已转人工为您处理，请稍等。"
+
+        if "当前无可用" in content or "不可转接" in content:
+            return "亲，当前人工客服暂时不可转接，您先把问题发我，我这边继续帮您记录。"
+
+        if "转接失败" in content or "缺少必要的会话信息" in content or "工具执行错误" in content:
+            return "亲，转人工暂时没成功，您先把问题发我，我这边继续帮您看。"
+
+        return "亲，已为您转接人工处理，请稍等。"
 
     def _inject_pre_retrieved_knowledge(
         self,
@@ -613,11 +1024,67 @@ class CustomerAgent(Bot):
             return text
 
         customer_part = text.split(marker, 1)[1]
-        stop_markers = ("\n商品卡片：", "\n商品：", "\n订单信息：", "\n物流信息：")
+        stop_markers = (
+            "\n商品卡片：",
+            "\n商品：",
+            "\n订单信息：",
+            "\n物流信息：",
+            "\n客户发送了图片",
+            "\n客户发送了视频",
+        )
         for stop in stop_markers:
             if stop in customer_part:
                 customer_part = customer_part.split(stop, 1)[0]
         return customer_part.strip() or text
+
+    async def _dedup_reply(
+        self,
+        content: str,
+        messages: List[Dict[str, Any]],
+        history: List[Dict[str, Any]],
+        session_id: str,
+    ) -> str:
+        """如果最终回复与上一条 assistant 回复完全相同，重新生成。"""
+        if not content or len(content) < 4:
+            return content
+
+        # 找最近一条 assistant 回复
+        last_assistant = ""
+        for msg in reversed(history):
+            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                last_assistant = str(msg["content"]).strip()
+                break
+
+        if not last_assistant:
+            return content
+
+        # 规范化比较：去除空白、标点
+        def _norm(text: str) -> str:
+            return re.sub(r"[\s。！？!?，,~～.]+", "", text)
+
+        if _norm(content) != _norm(last_assistant):
+            return content
+
+        # 相同：注入去重提示，重新生成
+        logger.warning(f"[回复去重] 检测到重复回复，重新生成: session={session_id}, reply={content[:60]}")
+        messages.append({"role": "assistant", "content": content})
+        messages.append({
+            "role": "user",
+            "content": (
+                "[系统提示] 你的上一条回复与之前重复了。"
+                "请根据客户最新的消息内容，给出有针对性的递进回复，不要重复之前的表述。"
+            ),
+        })
+        try:
+            response = await self._llm_client.chat(messages, tool_choice="none")
+            new_content = response.content or ""
+            new_content = self._sanitize_daytime_night_mode_reply(new_content, messages)
+            new_content = sanitize_final_reply(new_content)
+            if new_content and _norm(new_content) != _norm(content):
+                return new_content
+        except Exception as e:
+            logger.warning(f"[回复去重] 重新生成失败: {e}")
+        return content
 
     async def _compress_with_llm(
         self,

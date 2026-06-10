@@ -13,7 +13,7 @@ import re
 from utils.logger_loguru import get_logger
 from database.models import (
     Base, ProductKnowledge, CustomerServiceKnowledge, KnowledgeMetaEntry, Shop,
-    PresaleKnowledge, InsaleKnowledge, AftersaleKnowledge,
+    PresaleKnowledge, InsaleKnowledge, AftersaleKnowledge, SceneKnowledgeEmbedding,
 )
 from database.db_manager import db_manager
 from database.vector_retriever import VectorItem, VectorRetriever
@@ -836,11 +836,13 @@ class KnowledgeService:
                 score -= 55
 
         if q_has("档位", "几档", "最高几档", "几档调节", "有几档", "档位多少"):
-            if k_has("档位数量", "版本区别", "规格区别"):
+            if k_has("档位数量", "版本区别", "199档对应", "30000m", "500m"):
                 score += 85
+            if k_has("一档比一般风扇三档", "风力强，199档", "风力强199档"):
+                score -= 45
 
-        if q_has("长续航", "高配", "旗舰", "最大规格"):
-            if k_has("版本名称", "版本区别", "不等于实际", "长续航版本使用时间"):
+        if q_has("40000m", "长续航"):
+            if k_has("版本名称", "版本区别", "不等于实际", "40000m长续航版", "长续航版本使用时间"):
                 score += 45
 
         if query_clean == "续航":
@@ -876,9 +878,9 @@ class KnowledgeService:
         groups = (
             ("最大档", "最高档", "最大档位", "最高档位", "旗舰"),
             ("最低档", "低档", "最小风"),
-            ("长续航", "高配", "旗舰"),
-            ("中续航", "中配", "标准版"),
-            ("短续航", "低配", "基础版"),
+            ("40000m", "40000", "长续航"),
+            ("30000m", "30000", "中续航"),
+            ("20000m", "20000", "500m", "短续航"),
         )
         return tuple(
             tuple(cls._normalize_match_text(term) for term in group)
@@ -1054,7 +1056,7 @@ class KnowledgeService:
                     str(part or "")
                     for part in (scenario_label, entry.section_title, entry.sub_intent, tags_text)
                 )
-                if "scene_kb" in tags_text:
+                if "m11_scene_kb" in tags_text:
                     score += 35
                 elif not self._primary_customer_scene(scene_text):
                     score -= 45
@@ -1080,7 +1082,7 @@ class KnowledgeService:
         phrase_candidates = (
             "续航", "充满电", "充满", "能用多久", "用多久", "多长时间", "几个小时",
             "最大档", "最高档", "最低档", "低档", "高档", "电池容量", "多少毫安",
-            "长续航", "中续航", "短续航", "高配", "中配", "基础版", "充电线", "数据线", "充电器", "充电头",
+            "40000m", "30000m", "20000m", "充电线", "数据线", "充电器", "充电头",
             "送充电器", "送充电头", "送充电线", "有充电器", "有充电头", "有充电线",
             "充不了电", "充不进电", "充不上电", "不能充电", "无法充电", "不充电",
             "手机充电器", "普通充电器", "Type-C", "typec", "type-c", "充电口", "什么接口",
@@ -1088,12 +1090,27 @@ class KnowledgeService:
             "尺寸", "重量", "挂绳", "挂脖", "赠品", "颜色", "黑色", "白色", "绿色", "紫色",
             "有货", "现货", "什么快递", "发货地", "质保", "保修", "退货包运费",
         )
+        # Synonym expansion: query terms -> related terms in KB entries
+        _SYNONYM_EXPAND = {
+            "调档": ["档位", "调风"],
+            "桌上": ["桌面", "底座"],
+            "邮政": ["快递"],
+            "电不亮": ["充电", "不亮"],
+            "拒收": ["退货", "退款", "拒签"],
+            "顿丰": ["快递"],
+        }
         raw_terms = []
         raw_terms.extend(word.strip() for word in jieba.cut_for_search(text))
         raw_terms.extend(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", text))
         raw_terms.extend(phrase for phrase in phrase_candidates if phrase.lower() in text.lower())
         if re.search(r"充(?:不|不了|不上|不进|不进去)|(?:不能|无法|没法)充电|不充电", text):
             raw_terms.extend(["充电", "充电异常"])
+
+        # Apply synonym expansion
+        _text_lower = text.lower()
+        for _src, _expansions in _SYNONYM_EXPAND.items():
+            if _src in _text_lower:
+                raw_terms.extend(_expansions)
 
         stop_words = {
             "多久", "多少", "什么", "怎么", "可以", "有没有", "是不是",
@@ -1265,6 +1282,13 @@ class KnowledgeService:
 
     @staticmethod
     def _infer_product_family(goods_name: str) -> str:
+        lowered = str(goods_name or "").lower()
+        if "m11" in lowered:
+            return "m11"
+        if "x688" in lowered:
+            return "x688"
+        if "120档暴力小风扇" in str(goods_name or ""):
+            return "120"
         return ""
 
     @classmethod
@@ -1662,7 +1686,7 @@ class KnowledgeService:
             if scene_key:
                 tags_text = cs.tags or ""
                 scene_text = " ".join(str(part or "") for part in (cs.title, tags_text))
-                if "scene_kb" in tags_text:
+                if "m11_scene_kb" in tags_text:
                     score += 25
                 elif not self._primary_customer_scene(scene_text):
                     score -= 35
@@ -1701,7 +1725,7 @@ class KnowledgeService:
             if scene_key:
                 tags_text = cs.tags or ""
                 scene_text = " ".join(str(part or "") for part in (cs.title, tags_text))
-                if "scene_kb" in tags_text:
+                if "m11_scene_kb" in tags_text:
                     score += 25
                 elif not self._primary_customer_scene(scene_text):
                     score -= 35
@@ -2054,6 +2078,208 @@ class KnowledgeService:
         "insale": InsaleKnowledge,
         "aftersale": AftersaleKnowledge,
     }
+    _SCENE_TABLE_MAP = {
+        "presale": "presale_knowledge",
+        "insale": "insale_knowledge",
+        "aftersale": "aftersale_knowledge",
+    }
+    _EMBED_TEXT_FIELDS = ("section_title", "sub_intent", "aliases", "answer")
+
+    # ── Embedding 构建 ──
+
+    @staticmethod
+    def _build_embedding_text(entry) -> str:
+        """拼接用于生成 embedding 的文本。"""
+        parts = []
+        for field in ("section_title", "sub_intent", "aliases", "answer"):
+            val = getattr(entry, field, None)
+            if val:
+                parts.append(str(val))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        import hashlib
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cosine_similarity(left, right) -> float:
+        from math import sqrt
+        left_values = list(left)
+        right_values = list(right)
+        if not left_values or not right_values or len(left_values) != len(right_values):
+            return 0.0
+        numerator = sum(a * b for a, b in zip(left_values, right_values))
+        left_norm = sqrt(sum(v * v for v in left_values))
+        right_norm = sqrt(sum(v * v for v in right_values))
+        if left_norm == 0.0 or right_norm == 0.0:
+            return 0.0
+        return numerator / (left_norm * right_norm)
+
+    def build_scene_embeddings(self, scene: str = None, shop_id: int = None, batch_size: int = 100) -> dict:
+        """为场景知识生成 embedding 并写入 scene_knowledge_embeddings 表。
+
+        按 content_hash 去重：相同内容只调用一次 embedding，复用到所有 knowledge_id。
+
+        Args:
+            scene: 指定场景，None=全部
+            shop_id: 指定店铺，None=全部
+            batch_size: 每批调用 embedding 的条数
+
+        Returns:
+            {"total": N, "skipped": N, "created": N, "failed": N, "embed_calls": N}
+        """
+        import struct
+        import requests as _requests
+
+        scenes = [scene] if scene else ["presale", "insale", "aftersale"]
+        stats = {"total": 0, "skipped": 0, "created": 0, "failed": 0, "embed_calls": 0}
+
+        for sc in scenes:
+            model = self._SCENE_MODEL_MAP.get(sc)
+            table_name = self._SCENE_TABLE_MAP.get(sc)
+            if not model:
+                continue
+
+            # 1. 加载所有启用条目，计算 embed_text + content_hash
+            with self.get_session() as session:
+                stmt = select(model).where(model.enabled == True)
+                if shop_id is not None:
+                    db_sid = self._resolve_shop_id(shop_id)
+                    stmt = stmt.where(model.shop_id == db_sid)
+                entries = list(session.scalars(stmt))
+
+            # hash -> {embed_text, entries: [(entry, table_name)]}
+            hash_groups = {}
+            for entry in entries:
+                stats["total"] += 1
+                embed_text = self._build_embedding_text(entry)
+                if not embed_text.strip():
+                    stats["skipped"] += 1
+                    continue
+                c_hash = self._content_hash(embed_text)
+                if c_hash not in hash_groups:
+                    hash_groups[c_hash] = {"embed_text": embed_text, "entries": []}
+                hash_groups[c_hash]["entries"].append((entry, table_name))
+
+            # 2. 查询该 scene 已有的 content_hash
+            with self.get_session() as session:
+                existing_hashes = set(
+                    row[0] for row in session.execute(
+                        select(SceneKnowledgeEmbedding.content_hash).where(
+                            SceneKnowledgeEmbedding.scene == sc
+                        )
+                    ).all()
+                )
+
+            # 3. 分离：已有 hash（直接复用）vs 需要新生成
+            to_generate = {}  # hash -> embed_text
+            for c_hash, info in hash_groups.items():
+                if c_hash in existing_hashes:
+                    # 已有 embedding，只写映射行
+                    self._write_mapping_rows(sc, c_hash, info["entries"])
+                    stats["skipped"] += len(info["entries"])
+                else:
+                    to_generate[c_hash] = info
+
+            if not to_generate:
+                logger.info(f"[embedding构建] scene={sc} total={stats['total']} "
+                            f"reused={stats['skipped']} created=0 embed_calls=0")
+                continue
+
+            # 4. 批量生成 embedding（按 unique hash，不是按知识行）
+            embedding_model = self.vector_retriever.embedding_model
+            embed_url = self.vector_retriever.embedding_url
+            timeout = self.vector_retriever.timeout_seconds
+
+            hash_list = list(to_generate.keys())
+            for batch_start in range(0, len(hash_list), batch_size):
+                batch_hashes = hash_list[batch_start:batch_start + batch_size]
+                texts = [to_generate[h]["embed_text"] for h in batch_hashes]
+
+                try:
+                    resp = _requests.post(
+                        embed_url,
+                        json={"input": texts, "model": embedding_model},
+                        timeout=max(timeout, 60),
+                    )
+                    resp.raise_for_status()
+                    vectors = resp.json()["data"]
+                    vectors.sort(key=lambda x: x["index"])
+                    stats["embed_calls"] += len(batch_hashes)
+                except Exception as exc:
+                    logger.warning(f"[embedding批次失败] scene={sc} batch={batch_start//batch_size} error={exc}")
+                    stats["failed"] += sum(len(to_generate[h]["entries"]) for h in batch_hashes)
+                    continue
+
+                # 5. 写入：每个 hash 一条主记录 + 所有 knowledge_id 映射行
+                for i, c_hash in enumerate(batch_hashes):
+                    vec = vectors[i]["embedding"]
+                    blob = struct.pack(f"{len(vec)}f", *vec)
+                    info = to_generate[c_hash]
+                    entries_list = info["entries"]
+
+                    with self.get_session() as session:
+                        for entry, tbl in entries_list:
+                            row = SceneKnowledgeEmbedding(
+                                scene=sc,
+                                knowledge_table=tbl,
+                                knowledge_id=entry.id,
+                                shop_id=entry.shop_id,
+                                goods_id=entry.goods_id,
+                                embedding_text=info["embed_text"],
+                                embedding=blob,
+                                embedding_model=embedding_model,
+                                embedding_dim=len(vec),
+                                content_hash=c_hash,
+                            )
+                            session.add(row)
+                        session.commit()
+                        stats["created"] += len(entries_list)
+
+            logger.info(f"[embedding构建] scene={sc} total={stats['total']} "
+                        f"reused={stats['skipped']} created={stats['created']} "
+                        f"embed_calls={stats['embed_calls']} failed={stats['failed']}")
+
+        return stats
+
+    def _write_mapping_rows(self, scene: str, content_hash: str, entries: list):
+        """为已有 embedding 的 hash 写入 knowledge_id 映射行（如果不存在）。"""
+        with self.get_session() as session:
+            existing_ids = set(
+                row[0] for row in session.execute(
+                    select(SceneKnowledgeEmbedding.knowledge_id).where(and_(
+                        SceneKnowledgeEmbedding.scene == scene,
+                        SceneKnowledgeEmbedding.content_hash == content_hash,
+                    ))
+                ).all()
+            )
+            # 获取已有 embedding 的 blob
+            ref_row = session.scalar(
+                select(SceneKnowledgeEmbedding).where(and_(
+                    SceneKnowledgeEmbedding.scene == scene,
+                    SceneKnowledgeEmbedding.content_hash == content_hash,
+                )).limit(1)
+            )
+            if not ref_row:
+                return
+            for entry, tbl in entries:
+                if entry.id in existing_ids:
+                    continue
+                row = SceneKnowledgeEmbedding(
+                    scene=scene,
+                    knowledge_table=tbl,
+                    knowledge_id=entry.id,
+                    shop_id=entry.shop_id,
+                    goods_id=entry.goods_id,
+                    embedding_text=ref_row.embedding_text,
+                    embedding=ref_row.embedding,
+                    embedding_model=ref_row.embedding_model,
+                    embedding_dim=ref_row.embedding_dim,
+                    content_hash=content_hash,
+                )
+                session.add(row)
+            session.commit()
 
     def search_scene_knowledge(
         self,
@@ -2119,7 +2345,7 @@ class KnowledgeService:
             )
 
             # ── 截取 top N ──
-            for entry, score, match_type in ranked[:limit]:
+            for entry, rule_score, vector_score, final_score, match_type in ranked[:limit]:
                 results.append({
                     "id": entry.id,
                     "scene": scene_key,
@@ -2129,7 +2355,9 @@ class KnowledgeService:
                     "answer": entry.answer or "",
                     "section_title": entry.section_title or "",
                     "tags": entry.tags or "",
-                    "score": score,
+                    "rule_score": rule_score,
+                    "vector_score": round(vector_score, 4) if vector_score else 0,
+                    "score": final_score,
                     "match_type": match_type,
                     "source_type": entry.source_type or "",
                     "source_id": entry.source_id,
@@ -2227,9 +2455,9 @@ class KnowledgeService:
         对场景知识条目排序。
 
         商品专属作为第一排序键：所有专属条目排在通用条目之前，
-        同组内按 score 降序。
+        同组内按 final_score 降序。
 
-        返回: [(entry, score, match_type), ...]
+        返回: [(entry, rule_score, vector_score, final_score, match_type), ...]
         """
         # 拆分专属 vs 通用
         specific: List = []
@@ -2254,19 +2482,23 @@ class KnowledgeService:
         goods_id: Optional[int],
         scene_key: str = "",
     ) -> List[tuple]:
-        """对一组条目评分并排序。返回 [(entry, score, match_type), ...]"""
+        """对一组条目评分并排序。返回 [(entry, rule_score, vector_score, final_score, match_type), ...]
+
+        混合检索：规则评分 + 向量语义评分。
+        """
         if not query or not query.strip():
             scored = []
             for entry in entries:
                 score = int(entry.priority or 0) * 10
-                scored.append((entry, score, "priority"))
-            scored.sort(key=lambda x: -x[1])
+                scored.append((entry, score, 0, score, "priority"))
+            scored.sort(key=lambda x: -x[3])
             return scored
 
         query_clean = self._normalize_match_text(query)
         hints = self._query_intent_hints(query)
-        scored: List[tuple] = []
+        pre_scored: List[tuple] = []  # (entry, rule_score, match_type)
 
+        # ── 第一阶段：规则评分 ──
         for entry in entries:
             score = 0
             match_type = "none"
@@ -2290,11 +2522,10 @@ class KnowledgeService:
                 matched = True
 
             # 3. 意图调整（boost/penalize）
-            if hints:
-                intent_adjustment = self._intent_score_adjustment(hints, entry, scene_key)
-                score += intent_adjustment
-                if intent_adjustment > 0:
-                    matched = True
+            intent_adjustment = self._intent_score_adjustment(hints, entry, scene_key, query=query_clean)
+            score += intent_adjustment
+            if intent_adjustment > 0:
+                matched = True
 
             if not matched:
                 continue
@@ -2302,18 +2533,100 @@ class KnowledgeService:
             # 4. priority 只对已匹配条目加分，避免无关高优先级条目污染结果
             score += int(entry.priority or 0) * 10
 
-            # 5. 向量检索 TODO
-            # TODO: 接入 VectorRetriever，namespace=f"{scene_key}_knowledge"
-            # vector_score = self.vector_retriever.rank(...)
-            # if vector_score > 0:
-            #     score += vector_score
-            #     match_type = "vector"
-
             if score > 0:
-                scored.append((entry, score, match_type))
+                pre_scored.append((entry, score, match_type))
 
-        scored.sort(key=lambda x: -x[1])
+        # ── 第二阶段：向量语义评分（混合检索） ──
+        scored = self._apply_vector_scores(pre_scored, query, scene_key, goods_id)
+
+        scored.sort(key=lambda x: -x[3])
         return scored
+
+    _VECTOR_SCORE_THRESHOLD = 0.45
+    _PRICE_KEYWORDS = frozenset(("价格", "多少钱", "优惠", "售价", "页面价格", "券", "九块九", "9块9", "9.9", "990元"))
+    _PRICE_SECTION_KEYWORDS = frozenset(("价格", "多少钱", "优惠", "售价", "券"))
+
+    def _apply_vector_scores(
+        self,
+        pre_scored: List[tuple],
+        query: str,
+        scene_key: str,
+        goods_id: Optional[int],
+    ) -> List[tuple]:
+        """对已评分条目追加向量语义分。失败时静默回退到纯规则。
+
+        保护规则：
+        - vector_score < 0.45 不参与融合
+        - 非价格 query + 价格类条目 → 不给 vector bonus
+        - match_type 只在 vector_score >= 0.45 时标记为 hybrid/vector
+
+        输入: [(entry, rule_score, match_type), ...]
+        输出: [(entry, rule_score, vector_score, final_score, match_type), ...]
+        """
+        if not pre_scored or not self.vector_retriever:
+            return [(e, rs, 0, rs, mt) for e, rs, mt in pre_scored]
+
+        table_name = self._SCENE_TABLE_MAP.get(scene_key)
+        if not table_name:
+            return [(e, rs, 0, rs, mt) for e, rs, mt in pre_scored]
+
+        # 生成 query embedding
+        try:
+            query_vec = self.vector_retriever._embed(query.strip())
+        except Exception as exc:
+            logger.debug(f"[hybrid] query embedding failed, fallback to rule-only: {exc}")
+            return [(e, rs, 0, rs, mt) for e, rs, mt in pre_scored]
+
+        if not query_vec:
+            return [(e, rs, 0, rs, mt) for e, rs, mt in pre_scored]
+
+        # 判断 query 是否有价格意图
+        q_lower = self._normalize_match_text(query)
+        query_has_price_intent = any(kw in q_lower for kw in self._PRICE_KEYWORDS)
+
+        import struct
+        result = []
+        for entry, rule_score, match_type in pre_scored:
+            vector_score = 0.0
+            try:
+                with self.get_session() as session:
+                    row = session.scalar(
+                        select(SceneKnowledgeEmbedding).where(and_(
+                            SceneKnowledgeEmbedding.scene == scene_key,
+                            SceneKnowledgeEmbedding.knowledge_table == table_name,
+                            SceneKnowledgeEmbedding.knowledge_id == entry.id,
+                        ))
+                    )
+                if row and row.embedding:
+                    entry_vec = struct.unpack(f"{row.embedding_dim}f", row.embedding)
+                    vector_score = self._cosine_similarity(query_vec, entry_vec)
+            except Exception:
+                pass
+
+            # 保护 1: 低相似度不参与融合
+            if vector_score < self._VECTOR_SCORE_THRESHOLD:
+                result.append((entry, rule_score, vector_score, rule_score, match_type))
+                continue
+
+            # 保护 2: 非价格 query + 价格类条目 → 不给 vector bonus
+            combined = " ".join(filter(None, [
+                getattr(entry, "section_title", ""),
+                getattr(entry, "sub_intent", ""),
+                getattr(entry, "aliases", ""),
+                getattr(entry, "answer", ""),
+            ]))
+            is_price_entry = any(kw in combined for kw in self._PRICE_SECTION_KEYWORDS)
+            if is_price_entry and not query_has_price_intent:
+                result.append((entry, rule_score, vector_score, rule_score, match_type))
+                continue
+
+            # 融合
+            vector_bonus = int(vector_score * 500)
+            final_score = rule_score + vector_bonus
+            new_type = "hybrid" if match_type != "none" else "vector"
+            result.append((entry, rule_score, vector_score, final_score, new_type))
+
+        return result
 
     @staticmethod
     def _knowledge_match_query(query: Optional[str]) -> str:
@@ -2430,8 +2743,101 @@ class KnowledgeService:
 
     _LOGISTICS_QUERY_KW = ("快递", "物流", "包裹", "几小时到", "什么时候到", "到哪了", "到了吗", "发了吗", "寄出了", "还有多久到")
     _BATTERY_COMPLAINT_KW = ("没电", "半天", "用不了多久", "一会就没电", "不到一个小时", "续航短", "电不够用")
-    _WRONG_MISSING_KW = ("发错货", "发错颜色", "颜色错", "少了", "少了一个", "少了个", "少发", "漏发", "缺件", "配件少")
-    _NOTE_CHANGE_KW = ("备注一下", "备注发", "帮我改一下", "改一下地址", "能改地址", "更改收货地址", "改颜色", "换颜色")
+    _WRONG_MISSING_KW = (
+        "发错货", "发错颜色", "发错了", "错发", "颜色错", "颜色发错",
+        "少了", "少了一个", "少了个", "少发", "少发了", "少发了一个", "漏发", "漏发了",
+        "缺件", "缺少", "配件少",
+    )
+    _NOTE_CHANGE_KW = (
+        "备注一下", "备注发", "帮我改一下", "改一下地址", "能改地址", "更改收货地址", "改颜色", "换颜色",
+        "别发错", "不要发错", "别弄错", "不要弄错", "混色", "混发", "两个颜色", "发两个颜色",
+        "一黑一白", "一白一黑", "一绿一蓝", "一蓝一绿",
+    )
+    _MIX_COLOR_WORDS = ("绿色", "蓝色", "白色", "黑色", "粉色", "薄荷绿", "冰川白", "优雅黑", "皎月白", "星辉黑")
+    _PRICE_QUERY_KW = ("价格", "多少钱", "几块", "九块", "9块", "9.9", "990元", "太贵", "优惠价", "售价")
+    _WIND_QUERY_KW = ("风力", "风大", "风速", "转速", "多大", "凉快", "50000转", "五万转")
+    _BATTERY_SIZE_QUERY_KW = ("电池多大", "电池容量", "多大电池", "电池是多少", "电池多大容量", "毫安", "mAh", "毫安时", "容量多大")
+    _BATTERY_DURATION_QUERY_KW = (
+        "续航", "用多久", "能用多久", "可以用多久", "能吹多久", "可以吹多久",
+        "几个小时", "多长时间", "使用时间", "待机多久", "充一次电", "充满电",
+        "满电", "最大档能用", "最高档能用", "最大风力下", "最高风力下",
+    )
+    _H_MODEL_RE = re.compile(r"(?i)(?:^|[^a-z0-9])(?:2h|5h|10h)(?:[^a-z0-9]|$)")
+
+    # ── 轻量级意图分类关键词 ──
+    _INTENT_LOGISTICS_KW = (
+        "发什么快递", "什么快递", "发哪家", "快递公司", "发货地", "哪里发货",
+        "今天能发吗", "什么时候发货", "发中通吗", "发极兔吗", "发圆通吗",
+        "发顺丰吗", "能指定快递吗", "几天到", "多久到", "什么时候到",
+    )
+    _INTENT_ACCESSORY_KW = (
+        "挂绳", "挂脖", "底座", "支架", "充电线", "充电头", "配件", "送什么",
+        "有挂绳吗", "能挂脖吗", "有底座吗", "充电头送吗", "赠品",
+    )
+    _INTENT_COLOR_STOCK_KW = (
+        "颜色", "有什么颜色", "哪个颜色", "有黑色吗", "有白色吗", "有绿色吗",
+        "有粉色吗", "薄荷绿", "冰川白", "库存", "有货吗", "什么颜色",
+        "黑色", "白色", "绿色", "粉色", "蓝色",
+    )
+    _INTENT_AFTERSALE_FAULT_KW = (
+        "不转", "坏了", "异响", "滋滋声", "声音大", "还吵", "风小",
+        "充不进电", "没电", "用不了", "开不了", "没反应", "打不开",
+        "不出风", "噪音", "响", "松动",
+    )
+    _INTENT_WIND_POWER_KW = (
+        "风大吗", "风力", "风速", "凉快吗", "制冷", "半导体",
+        "多少转", "转速", "风大不大", "凉不凉", "最高档", "最大档",
+    )
+    _INTENT_PRICE_KW = (
+        "多少钱", "价格", "几块", "贵", "优惠", "券", "便宜",
+        "打折", "活动价",
+    )
+
+    @classmethod
+    def _classify_query_intent(cls, query: str) -> set:
+        """轻量级 query 意图分类（纯规则，不调用 LLM）。"""
+        q = str(query or "").strip()
+        intents: set = set()
+        if not q:
+            return intents
+
+        # battery_capacity 优先于 wind_power（"电池多大" 不是风力问题）
+        if any(kw in q for kw in cls._BATTERY_SIZE_QUERY_KW):
+            intents.add("battery_capacity")
+
+        # battery_duration
+        if any(kw in q for kw in cls._BATTERY_DURATION_QUERY_KW):
+            intents.add("battery_duration")
+
+        # logistics_delivery
+        if any(kw in q for kw in cls._INTENT_LOGISTICS_KW):
+            intents.add("logistics_delivery")
+
+        # accessory
+        if any(kw in q for kw in cls._INTENT_ACCESSORY_KW):
+            intents.add("accessory")
+
+        # color_stock
+        if any(kw in q for kw in cls._INTENT_COLOR_STOCK_KW):
+            intents.add("color_stock")
+
+        # wind_power（排除已归类为电池容量或续航的 query）
+        if "battery_capacity" not in intents and "battery_duration" not in intents and any(kw in q for kw in cls._INTENT_WIND_POWER_KW):
+            intents.add("wind_power")
+
+        # price
+        if any(kw in q for kw in cls._INTENT_PRICE_KW):
+            intents.add("price")
+
+        # aftersale_fault
+        if any(kw in q for kw in cls._INTENT_AFTERSALE_FAULT_KW):
+            intents.add("aftersale_fault")
+
+        # noise_fault（噪音售后子类）
+        if any(kw in q for kw in ("噪音", "吵", "滋滋声", "异响", "声音大", "声音不正常", "风扇响")):
+            intents.add("noise_fault")
+
+        return intents
 
     @classmethod
     def _query_intent_hints(cls, query: str) -> set:
@@ -2441,6 +2847,9 @@ class KnowledgeService:
         # 物流/到货（排除"到了"这种出现在答案中的通用词）
         if any(kw in q for kw in cls._LOGISTICS_QUERY_KW):
             hints.add("logistics")
+        # 到货时效查询：几天到货/多久到/什么时候到/到货/送达
+        if any(kw in q for kw in ("几天到货", "多久到货", "什么时候到", "多久能到", "几天能到", "到货", "送达")):
+            hints.add("arrival_time")
         # 售后续航投诉（区别于参数咨询）
         if any(kw in q for kw in cls._BATTERY_COMPLAINT_KW):
             hints.add("battery_complaint")
@@ -2450,10 +2859,42 @@ class KnowledgeService:
         # 备注/改地址/改颜色
         if any(kw in q for kw in cls._NOTE_CHANGE_KW):
             hints.add("note_change")
+        color_hits = sum(1 for kw in cls._MIX_COLOR_WORDS if kw in q)
+        if color_hits >= 2 and any(kw in q for kw in ("一个", "一件", "1个", "1件", "各一", "别发错", "不要发错", "混色", "混发", "发一个", "发两个")):
+            hints.add("note_change")
+        if any(kw in q for kw in cls._PRICE_QUERY_KW):
+            hints.add("price_query")
+        if any(kw in q for kw in cls._WIND_QUERY_KW):
+            # Issue 7: "电池多大" 含 "多大" 但意图是电池，不应标记为风力查询
+            if any(kw in q for kw in cls._BATTERY_SIZE_QUERY_KW):
+                hints.add("battery_size_query")
+            else:
+                hints.add("wind_query")
+        elif any(kw in q for kw in cls._BATTERY_SIZE_QUERY_KW):
+            hints.add("battery_size_query")
+        if any(kw in q for kw in cls._BATTERY_DURATION_QUERY_KW):
+            hints.add("battery_duration_query")
+        # DS18 2H/5H/10H 是型号规格，不是续航时长；只在明确问到 H 型号时触发。
+        if cls._H_MODEL_RE.search(q):
+            hints.add("h_model")
+
+        # 合并轻量级意图分类结果
+        classified = cls._classify_query_intent(q)
+        if classified:
+            hints |= classified
+            logger.debug("[检索意图] query={} intents={}".format(q[:60], ",".join(sorted(classified))))
+
+        # cooling_query（制冷/制冰/半导体意图）
+        if any(kw in q for kw in (
+            "制冰", "制冷", "半导体", "小铁皮", "银色片片", "片片",
+            "金属片", "冰感", "冷敷片", "会冷吗", "像空调",
+        )):
+            hints.add("cooling_query")
+
         return hints
 
     @classmethod
-    def _intent_score_adjustment(cls, hints: set, entry, scene_key: str = "") -> int:
+    def _intent_score_adjustment(cls, hints: set, entry, scene_key: str = "", query: str = "") -> int:
         """根据意图标签对条目进行加分/减分。返回调整值（可正可负）。"""
         section = (entry.section_title or "").lower()
         sub_intent = (entry.sub_intent or "").lower()
@@ -2483,19 +2924,271 @@ class KnowledgeService:
         if "wrong_missing" in hints:
             is_color_param = ("颜色" in section and "确认" in section)
             is_handling = "转人工" in answer
-            is_wrong_section = any(kw in section for kw in ("发错", "少配件", "少件"))
+            is_wrong_section = any(kw in f"{section} {sub_intent}" for kw in ("发错", "错发", "少配件", "少件", "少发", "漏发", "缺件"))
+            is_fault_section = any(kw in f"{section} {sub_intent}" for kw in ("充电", "故障", "开不了", "不转", "没反应", "噪音", "异响"))
+            is_generic_refund_quality = any(kw in f"{section} {sub_intent}" for kw in ("退款处理边界", "质量问题", "退货运费"))
             if is_color_param:
                 adj -= 120
             if is_handling:
                 adj += 60
             if is_wrong_section:
-                adj += 80
+                adj += 1500
+            if scene_key == "aftersale" and is_fault_section and not is_wrong_section:
+                adj -= 600
+            if scene_key == "aftersale" and is_generic_refund_quality and not is_wrong_section:
+                adj -= 800
 
         # 备注/改地址 → 修改处理类加分
         if "note_change" in hints:
-            is_change_handling = any(kw in combined for kw in ("备注", "改地址", "修改", "更换"))
+            is_change_handling = any(kw in combined for kw in (
+                "备注", "改地址", "修改", "更换", "混色", "混发", "退款重拍"
+            ))
+            is_pure_color_param = any(kw in combined for kw in ("颜色选项", "颜色确认", "颜色可选", "库存有货")) and not is_change_handling
             if is_change_handling:
-                adj += 40
+                adj += 500
+            if is_pure_color_param:
+                adj -= 300
+
+        if "price_query" in hints:
+            is_price = any(kw in combined for kw in ("价格", "多少钱", "九块九", "9块9", "9.9", "990元", "售价", "优惠价"))
+            is_wind = any(kw in combined for kw in ("风力", "风速", "转速", "档位", "凉快"))
+            if is_price:
+                adj += 180
+            if is_wind:
+                adj -= 160
+
+        if "wind_query" in hints:
+            is_price = any(kw in combined for kw in ("价格", "多少钱", "九块九", "9块9", "9.9", "990元", "售价", "优惠价"))
+            is_wind = any(kw in combined for kw in ("风力", "风速", "转速", "档位", "凉快", "50000", "五万转"))
+            if is_wind:
+                adj += 180
+            if is_price:
+                adj -= 1600
+
+        if "battery_duration_query" in hints:
+            is_battery_duration = any(
+                kw in combined
+                for kw in (
+                    "续航", "能用多久", "用多久", "吹多久", "几个小时", "多长时间",
+                    "使用时间", "小时", "最大档", "最高档",
+                )
+            )
+            is_charging_only = any(
+                kw in combined for kw in ("充电款确认", "内置充电电池", "不插电使用", "5v普通充电头")
+            ) and not is_battery_duration
+            is_pure_wind_or_gear = any(
+                kw in combined
+                for kw in ("档位数量", "几档", "风力", "风速", "转速", "凉快")
+            ) and not any(kw in combined for kw in ("续航", "用多久", "几个小时", "电池", "充满"))
+            is_price = any(kw in combined for kw in ("价格", "多少钱", "九块九", "9块9", "9.9", "990元", "售价", "优惠价"))
+            # 续航 query 明确问档位时不过度降权
+            query_explicit_gear = any(kw in query for kw in ("档位是什么意思", "120档", "199档", "几档", "多少档", "档位区别"))
+            is_gear_entry = (
+                (entry.sub_intent or "").startswith("档位") or
+                "档位数量" in (entry.sub_intent or "")
+            )
+            if is_battery_duration:
+                adj += 260
+            if is_charging_only:
+                adj -= 360
+            if is_pure_wind_or_gear and not query_explicit_gear:
+                adj -= 260
+            # 续航 query + 档位条目（且 query 未明确问档位）→ 强降权
+            if is_gear_entry and not query_explicit_gear:
+                adj -= 800
+            if is_price:
+                adj -= 1600
+
+        # Issue 7: "电池多大" → 电池容量条目加分，风力条目降权
+        if "battery_size_query" in hints:
+            is_battery = any(kw in combined for kw in ("电池", "容量", "毫安", "mah", "充电"))
+            is_wind = any(kw in combined for kw in ("风力", "风速", "转速", "档位", "凉快"))
+            if is_battery:
+                adj += 180
+            if is_wind:
+                adj -= 160
+
+        # cooling_query：制冷/制冰/半导体意图
+        if "cooling_query" in hints:
+            is_cooling = any(kw in combined for kw in (
+                "制冰", "制冷", "半导体", "小铁皮", "金属片", "冰感", "冷敷片", "风力降温",
+            ))
+            is_price = any(kw in combined for kw in ("价格", "多少钱", "优惠", "售价", "页面价格", "券"))
+            is_battery_gear = any(kw in combined for kw in ("电池", "续航", "档位", "充电"))
+            if is_cooling:
+                adj += 600
+            if is_price:
+                adj -= 1200
+            if is_battery_gear and not is_cooling:
+                adj -= 300
+
+        # ── 轻量级意图加权 ──
+
+        # battery_capacity：电池容量查询
+        if "battery_capacity" in hints:
+            is_battery_title = any(kw in section for kw in ("电池", "容量", "续航")) or \
+                              any(kw in sub_intent for kw in ("电池", "容量", "毫安", "mah"))
+            is_battery_answer = any(kw in answer for kw in ("电池容量", "毫安", "mah"))
+            is_other = any(kw in combined for kw in ("风力", "风速", "转速", "档位", "价格", "快递", "物流"))
+            if is_battery_title:
+                adj += 360
+            elif is_battery_answer and not is_other:
+                adj += 260
+            if is_other and not is_battery_title:
+                adj -= 260
+
+        # logistics_delivery：快递物流查询
+        if "logistics_delivery" in hints:
+            is_logistics = any(kw in combined for kw in ("快递", "物流", "发货", "发货地", "仓库", "配送"))
+            is_other = any(kw in combined for kw in ("续航", "电池", "风力", "价格"))
+            is_accessory = any(kw in combined for kw in ("配件", "赠品", "挂绳", "底座", "充电线", "充电头"))
+            if is_logistics:
+                adj += 300
+            if is_other and not is_logistics:
+                adj -= 120
+            if is_accessory and not is_logistics:
+                adj -= 500
+
+        # arrival_time：到货时效查询（几天到货/多久到/什么时候到）
+        if "arrival_time" in hints:
+            is_arrival = any(kw in combined for kw in ("到货时效", "物流到货", "发货物流", "配送时效", "几天到", "多久到"))
+            is_return_refund = any(kw in combined for kw in ("退货", "退款", "退货运费", "七天无理由", "拒收"))
+            if is_arrival:
+                adj += 500
+            if is_return_refund:
+                adj -= 800
+
+        # accessory：配件赠品查询
+        if "accessory" in hints:
+            is_accessory = any(kw in combined for kw in ("挂绳", "挂脖", "底座", "支架", "充电线", "充电头", "配件", "赠品"))
+            is_other = any(kw in combined for kw in ("续航", "电池", "风力", "价格"))
+            if is_accessory:
+                adj += 220
+            if is_other and not is_accessory:
+                adj -= 120
+
+        # color_stock：颜色库存查询
+        if "color_stock" in hints:
+            is_color = any(kw in combined for kw in ("颜色", "库存", "黑色", "白色", "绿色", "粉色", "薄荷绿", "冰川白", "蓝色"))
+            if is_color:
+                adj += 220
+
+        # wind_power：风力查询（排除已归类为电池容量的）
+        if "wind_power" in hints and "battery_capacity" not in hints:
+            is_wind = any(kw in combined for kw in ("风力", "风速", "凉快", "制冷", "半导体", "转速", "多少转"))
+            is_other = any(kw in combined for kw in ("电池容量", "续航", "价格", "快递"))
+            if is_wind:
+                adj += 220
+            if is_other and not is_wind:
+                adj -= 160
+
+        # price：价格查询（增强版）
+        if "price" in hints:
+            is_price = any(kw in combined for kw in ("价格", "多少钱", "页面价格", "优惠", "券", "售价", "优惠价"))
+            is_other = any(kw in combined for kw in ("续航", "电池", "风力", "快递", "颜色"))
+            if is_price:
+                adj += 260
+            if is_other and not is_price:
+                adj -= 160
+
+        # aftersale_fault：售后故障（仅售后场景）
+        if "aftersale_fault" in hints and scene_key == "aftersale":
+            is_fault_handling = any(kw in combined for kw in (
+                "转人工", "核实", "处理", "故障", "维修",
+                "不转", "异响", "滋滋声", "风小", "充不进电",
+            ))
+            is_price = any(kw in combined for kw in ("价格", "多少钱", "优惠", "券", "售价"))
+            is_pure_param = any(kw in combined for kw in ("续航", "电池容量", "风力")) and not is_fault_handling
+            is_supplement_section = "售后补充" in section
+            if is_fault_handling:
+                adj += 400
+            if is_price and not is_fault_handling:
+                adj -= 400
+            if is_pure_param:
+                adj -= 260
+            if is_supplement_section and not is_fault_handling:
+                adj -= 800
+
+        # noise_fault：噪音售后查询（仅售后场景）
+        if "noise_fault" in hints and scene_key == "aftersale":
+            is_noise_entry = any(kw in combined for kw in ("滋滋声", "异响", "噪音", "扇叶松", "前网松", "声音大", "很吵"))
+            is_noise_handling = any(kw in combined for kw in ("转人工", "核实", "处理"))
+            if is_noise_entry:
+                adj += 500
+            if not is_noise_entry and not is_noise_handling:
+                adj -= 500
+            elif not (is_noise_entry or is_noise_handling):
+                adj -= 300
+
+        # 明确问 2H/5H/10H 时，优先返回型号说明；普通"续航多久"不触发。
+        if "h_model" in hints:
+            is_h_model_entry = (
+                "2h/5h/10h" in combined
+                or "2h、5h、10h" in combined
+                or "型号说明" in combined
+                or getattr(entry, "source_type", "") == "user_confirmed_ds18_h_model_20260605"
+            )
+            if is_h_model_entry:
+                adj += 900
+
+        # ── 开关机教程降权：续航/配件/充电方式/版本/售后查询不应命中开关机教程 ──
+        is_switch_tutorial = "开关机教程" in sub_intent
+        if is_switch_tutorial:
+            # 续航/电池查询
+            is_battery_query = "battery_duration_query" in hints or any(
+                kw in query for kw in ("续航", "用多久", "吹多久", "几个小时", "多长时间", "能用")
+            )
+            # 配件/充电器查询
+            is_accessory_query = "accessory" in hints or any(
+                kw in query for kw in ("充电器", "充电线", "充电头", "配件", "送什么", "赠品", "挂绳", "底座")
+            )
+            # 充电方式查询
+            is_charging_method_query = any(
+                kw in query for kw in ("怎么充电", "什么充电口", "type-c", "typec", "充电口", "充电方式", "用手机充")
+            )
+            # 版本区别查询
+            is_version_query = any(
+                kw in query for kw in ("版本", "40000m", "10000m", "500m", "什么区别", "区别")
+            )
+            # 售后故障查询
+            is_aftersale_query = "aftersale_fault" in hints or any(
+                kw in query for kw in ("不转", "坏了", "没反应", "充不进", "噪音", "插上电")
+            )
+            # 版本查询不降权（开关机教程可能含充电口信息，对版本查询有参考价值）
+            if is_battery_query or is_accessory_query or is_charging_method_query or is_aftersale_query:
+                adj -= 1200
+
+        # ── 充电器/充电线/充电头查询：配件条目加分 ──
+        _is_charger_accessory_query = any(
+            kw in query for kw in ("充电器", "充电线", "充电头", "数据线", "充电宝")
+        )
+        if _is_charger_accessory_query:
+            is_accessory_entry = any(
+                kw in section for kw in ("配件", "赠品")
+            ) or any(
+                kw in sub_intent for kw in ("充电器", "充电线", "充电头", "赠品清单", "快充", "charger")
+            )
+            if is_accessory_entry:
+                adj += 2000
+
+        # ── 版本名查询：非版本条目降权 ──
+        is_version_query = any(kw in query for kw in ("40000m", "10000m", "500m", "30000m", "20000m"))
+        if is_version_query:
+            is_version_entry = any(kw in combined for kw in (
+                "版本名称", "版本区别", "型号名称", "版本", "规格名称",
+                "40000m", "10000m", "500m",
+            ))
+            is_gear_or_button = any(kw in combined for kw in (
+                "加减按键", "按键用途", "开关机教程", "正面按键",
+            ))
+            if is_gear_or_button and not is_version_entry:
+                adj -= 1200
+            if is_version_entry:
+                adj += 400
+            # 版本查询命中非续航/版本 section → 降权
+            is_version_section = any(kw in section for kw in ("续航", "版本", "电池", "参数"))
+            if not is_version_section:
+                adj -= 400
 
         return adj
 
